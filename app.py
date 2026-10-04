@@ -3,18 +3,25 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import requests
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("📈 Interactive Stock Ticker Dashboard")
 
+# Custom requests session to bypass cloud IP blocking
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
+
 # --- SIDEBAR INPUTS ---
 ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="AAPL").upper()
 peer_symbols = st.sidebar.text_input("Enter Peers (comma-separated):", value="MSFT, GOOGL, NVDA")
 peers = [p.strip().upper() for p in peer_symbols.split(",")]
 
-ticker = yf.Ticker(ticker_symbol)
+ticker = yf.Ticker(ticker_symbol, session=session)
 
 # --- PANEL 1: INDICATIVE FUTURE TRADING BANDS ---
 st.header(f"1. Price & Trading Bands ({ticker_symbol})")
@@ -22,13 +29,11 @@ st.header(f"1. Price & Trading Bands ({ticker_symbol})")
 hist = ticker.history(period="1y")
 
 if not hist.empty:
-    # Calculate Bollinger Bands
     indicator_bb = BollingerBands(close=hist["Close"], window=20, window_dev=2)
     hist["BB_Upper"] = indicator_bb.bollinger_hband()
     hist["BB_Lower"] = indicator_bb.bollinger_lband()
     hist["SMA_20"] = indicator_bb.bollinger_mavg()
 
-    # Plot Candlestick with Bands
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'],
                                  low=hist['Low'], close=hist['Close'], name='Price'))
@@ -45,15 +50,18 @@ else:
 st.header("2. Key News & Sentiment")
 
 analyzer = SentimentIntensityAnalyzer()
-news_items = ticker.news
+try:
+    news_items = ticker.news
+except Exception:
+    news_items = []
 
 if news_items:
     news_data = []
     for item in news_items[:5]:
-        title = item.get('title') or item.get('content', {}).get('title', 'N/A')
-        link = item.get('link') or item.get('content', {}).get('canonicalUrl', {}).get('url', '#')
+        content = item.get('content', {}) if isinstance(item.get('content'), dict) else {}
+        title = item.get('title') or content.get('title') or 'No Title Available'
+        link = item.get('link') or content.get('canonicalUrl', {}).get('url') or '#'
         
-        # Calculate sentiment score
         score = analyzer.polarity_scores(title)['compound']
         sentiment = "🟢 Bullish" if score > 0.05 else ("🔴 Bearish" if score < -0.05 else "🟡 Neutral")
         
@@ -63,14 +71,9 @@ if news_items:
 else:
     st.write("No recent news found.")
 
-import requests
-
-# --- PANEL 3 & 4: COMPETITOR & INDUSTRY PEER METRICS ---
+# --- PANEL 3: COMPETITOR & INDUSTRY PEER METRICS ---
 st.header("3. Competitor & Industry Peer Metrics")
 
-st.header("3. Competitor & Industry Peer Metrics")
-
-# Add an expandable guide for users
 with st.expander("📖 What do these competitor metrics mean?"):
     st.markdown("""
     - **P/E Ratio:** Current price relative to historical earnings. Lower = cheaper; Higher = higher growth expectations.
@@ -80,15 +83,10 @@ with st.expander("📖 What do these competitor metrics mean?"):
     - **Gross Margin (%):** Profit left over after core production costs. Reflects pricing power and efficiency.
     - **Debt-to-Equity:** Measures financial leverage. High values signal greater debt load and risk.
     """)
+
 @st.cache_data(ttl=3600)
 def get_metrics_custom_session(sym):
     try:
-        # Create a session impersonating a regular Chrome browser
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        })
-        
         t = yf.Ticker(sym, session=session)
         info = t.info
         
@@ -108,7 +106,7 @@ def get_metrics_custom_session(sym):
             "Debt-to-Equity": safe_get("debtToEquity")
         }
     except Exception:
-        return {"Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"}
+        return {"Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"}
 
 all_tickers = [ticker_symbol] + peers
 metrics_list = []
@@ -119,3 +117,43 @@ with st.spinner("Fetching live peer metrics..."):
 
 comparison_df = pd.DataFrame(metrics_list).set_index("Ticker")
 st.dataframe(comparison_df)
+
+# --- PANEL 4: WALL STREET ANALYST TARGETS & RATINGS ---
+st.header("4. Wall Street Analyst Price Targets & Consensus")
+
+try:
+    targets = ticker.analyst_price_targets
+    info = ticker.info
+    current_price = info.get("currentPrice") or info.get("regularMarketPrice", "N/A")
+    recommendation = info.get("recommendationKey", "N/A").replace("_", " ").title()
+    num_analysts = info.get("numberOfAnalystOpinions", "N/A")
+
+    if targets:
+        mean_target = targets.get('mean')
+        low_target = targets.get('low')
+        high_target = targets.get('high')
+        current = targets.get('current', current_price)
+
+        if mean_target and current and isinstance(current, (int, float)):
+            upside = round(((mean_target - current) / current) * 100, 2)
+            upside_str = f"{'+' if upside > 0 else ''}{upside}%"
+        else:
+            upside_str = "N/A"
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Consensus Rating", recommendation, f"{num_analysts} Analysts")
+        c2.metric("Current Price", f"${current}")
+        c3.metric("Mean Price Target", f"${mean_target}", upside_str)
+        c4.metric("Target Range", f"${low_target} - ${high_target}")
+
+        if low_target and high_target and current and isinstance(current, (int, float)):
+            st.subheader("Price Target Spread")
+            st.write(f"**Low:** ${low_target} | **Current:** ${current} | **Mean Target:** ${mean_target} | **High:** ${high_target}")
+            spread = high_target - low_target
+            if spread > 0:
+                pos = min(max((current - low_target) / spread, 0.0), 1.0)
+                st.progress(pos, text=f"Current Price Position in Analyst Range: {round(pos * 100, 1)}%")
+    else:
+        st.warning("Analyst price target data is currently unavailable for this ticker.")
+except Exception as e:
+    st.error(f"Could not load analyst data: {e}")
