@@ -1,8 +1,9 @@
 streamlit
 yfinance
-yahooquery
 pandas
 numpy
 plotly
 ta
 vaderSentiment
+requests
+beautifulsoup4
