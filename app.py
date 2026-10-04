@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import urllib.request
 import xml.etree.ElementTree as ET
 from ta.volatility import BollingerBands
+from ta.momentum import RSIIndicator
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
@@ -89,7 +90,6 @@ def fetch_multi_source_news(sym):
             for item in root.findall('./channel/item'):
                 title = item.find('title').text if item.find('title') is not None else ""
                 link = item.find('link').text if item.find('link') is not None else "#"
-                # Filter for stock keyword context
                 if title and sym.lower() in title.lower():
                     articles.append({'title': title, 'link': link, 'source': 'CNBC'})
                     count += 1
@@ -211,32 +211,79 @@ with st.spinner("Fetching live peer metrics..."):
 
 st.dataframe(comparison_df)
 
-# --- PANEL 4: WALL STREET ANALYST TARGETS & RATINGS ---
-st.header("4. Wall Street Analyst Price Targets & Consensus")
+# --- PANEL 4: PROFESSIONAL STOCK ANALYST RECOMMENDATION & ANALYSIS ---
+st.header("4. Professional Stock Analyst Recommendation")
 
-@st.cache_data(ttl=3600)
-def get_analyst_consensus(sym):
+with st.expander("📖 What do Overbought, Neutral, and Oversold mean?"):
+    st.markdown("""
+    - **🔴 Overbought:** The stock price has surged sharply or trades near the top of its historical band/valuation range, with elevated RSI indicators (>70). It may be due for a temporary pullback or consolidation.
+    - **🟡 Neutral:** The stock is trading within fair value valuation bounds and balanced technical bands (RSI between 30 and 70). Risk/reward is currently balanced.
+    - **🟢 Oversold:** The stock has experienced heavy selling pressure, driving technical momentum down (RSI < 30) or price below its lower trading band, often creating an attractive risk/reward entry point for long-term investors.
+    """)
+
+if not hist.empty and len(hist) > 30:
+    # 1. Technical Calculations
+    rsi_series = RSIIndicator(close=hist["Close"], window=14).rsi()
+    current_rsi = round(rsi_series.dropna().iloc[-1], 2)
+    
+    current_price = hist["Close"].iloc[-1]
+    bb_upper = hist["BB_Upper"].dropna().iloc[-1]
+    bb_lower = hist["BB_Lower"].dropna().iloc[-1]
+    bb_sma = hist["SMA_20"].dropna().iloc[-1]
+
+    # 2. Fundamental & Financial Statement Extraction
+    pe_val, margin_val, roe_val = "N/A", "N/A", "N/A"
     try:
-        t = yf.Ticker(sym)
-        hist = t.history(period="1d")
-        current = hist["Close"].iloc[-1] if not hist.empty else t.fast_info.get("lastPrice")
-        
-        rec = t.recommendations
-        if rec is not None and not rec.empty:
-            target = rec.get("targetMeanPrice", [None])[0] if "targetMeanPrice" in rec.columns else None
-            return current, target
-        return current, None
+        income = ticker.financials
+        balance = ticker.balance_sheet
+        shares = ticker.fast_info.get("shares")
+
+        if not income.empty and not balance.empty:
+            net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
+            revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
+            gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
+            equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
+
+            if net_income and shares and net_income > 0:
+                eps = net_income / shares
+                pe_val = round(current_price / eps, 2)
+            if gross_profit and revenue:
+                margin_val = f"{round((gross_profit / revenue) * 100, 2)}%"
+            if net_income and equity:
+                roe_val = f"{round((net_income / equity) * 100, 2)}%"
     except Exception:
-        return None, None
+        pass
 
-current_price, mean_target = get_analyst_consensus(ticker_symbol)
+    # 3. Dynamic Technical & Fundamental Rating Logic
+    if current_rsi > 70 or current_price >= bb_upper:
+        rating = "OVERBOUGHT"
+        rating_color = "🔴"
+        recommendation_text = f"**{ticker_symbol}** is displaying strong bullish momentum that has pushed technical indicators into extended territory. With a 14-day RSI of **{current_rsi}** and trading near or above its upper Bollinger Band (${round(bb_upper, 2)}), the stock shows potential risk for short-term profit taking or consolidation."
+    elif current_rsi < 30 or current_price <= bb_lower:
+        rating = "OVERSOLD"
+        rating_color = "🟢"
+        recommendation_text = f"**{ticker_symbol}** is currently experiencing significant downward momentum. With an RSI of **{current_rsi}** and trading near or below its lower Bollinger Band (${round(bb_lower, 2)}), selling pressure appears extended, presenting potential mean-reversion buying opportunities."
+    else:
+        rating = "NEUTRAL"
+        rating_color = "🟡"
+        recommendation_text = f"**{ticker_symbol}** is currently trading within normal technical bounds. Its RSI stands at **{current_rsi}**, well within balanced territory, and price action remains centered near its 20-day moving average (${round(bb_sma, 2)})."
 
-if mean_target and current_price:
-    upside = round(((mean_target - current_price) / current_price) * 100, 2)
-    upside_str = f"{'+' if upside > 0 else ''}{upside}%"
+    # 4. Render Metric Summary Dashboard
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Analyst Rating", f"{rating_color} {rating}")
+    c2.metric("14-Day RSI", f"{current_rsi}")
+    c3.metric("Current Price", f"${round(current_price, 2)}")
+    c4.metric("20-Day SMA", f"${round(bb_sma, 2)}")
 
-    c1, c2 = st.columns(2)
-    c1.metric("Current Price", f"${round(current_price, 2)}")
-    c2.metric("Mean Price Target", f"${round(mean_target, 2)}", upside_str)
+    st.markdown("### Executive Summary & Technical Breakdown")
+    st.write(recommendation_text)
+
+    # 5. Summary Analysis Box
+    st.info(f"""
+    **Financial & Technical Breakdown Summary for {ticker_symbol}:**
+    - **Valuation & Efficiency:** P/E Ratio: **{pe_val}** | Gross Margin: **{margin_val}** | ROE: **{roe_val}**
+    - **Bollinger Bands:** Upper Bound: **${round(bb_upper, 2)}** | Lower Bound: **${round(bb_lower, 2)}**
+    - **Analyst Note:** Always evaluate overall macroeconomic conditions and sector trends in tandem with technical RSI levels.
+    """)
 else:
-    st.info("Analyst price target data is limited on this stream for the selected ticker.")
+    st.warning("Insufficient historical price data available to generate technical analyst analysis.")
