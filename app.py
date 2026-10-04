@@ -259,10 +259,11 @@ with st.spinner("Fetching live peer metrics..."):
 
 def style_relative_to_ref(df):
     styles = pd.DataFrame('', index=df.index, columns=df.columns)
-    if len(df) <= 1:
+    if len(df) < 1:
         return styles
 
-    ref_row = df.iloc[0]
+    green_style = 'background-color: rgba(40, 167, 69, 0.25); color: #28a745; font-weight: bold;'
+    red_style = 'background-color: rgba(220, 53, 69, 0.25); color: #dc3545; font-weight: bold;'
 
     higher_is_better = {
         "Price": True,
@@ -275,6 +276,26 @@ def style_relative_to_ref(df):
         "Debt/Equity": False
     }
 
+    ref_row = df.iloc[0]
+
+    # --- COLOR ROW 0 (REFERENCE TICKER) RELATIVE TO PEER AVERAGE ---
+    if len(df) > 1:
+        peer_avg = df.iloc[1:].mean(numeric_only=True)
+        for col in df.columns:
+            val = ref_row[col]
+            avg_val = peer_avg.get(col, np.nan)
+
+            if pd.isna(val) or pd.isna(avg_val):
+                continue
+
+            prefer_higher = higher_is_better.get(col, True)
+
+            if val > avg_val:
+                styles.iloc[0][df.columns.get_loc(col)] = green_style if prefer_higher else red_style
+            elif val < avg_val:
+                styles.iloc[0][df.columns.get_loc(col)] = red_style if prefer_higher else green_style
+
+    # --- COLOR ROWS 1+ RELATIVE TO ROW 0 ---
     for idx in range(1, len(df)):
         for col in df.columns:
             val = df.iloc[idx][col]
@@ -286,9 +307,9 @@ def style_relative_to_ref(df):
             prefer_higher = higher_is_better.get(col, True)
 
             if val > ref_val:
-                styles.iloc[idx][df.columns.get_loc(col)] = 'background-color: rgba(40, 167, 69, 0.25); color: #28a745; font-weight: bold;' if prefer_higher else 'background-color: rgba(220, 53, 69, 0.25); color: #dc3545; font-weight: bold;'
+                styles.iloc[idx][df.columns.get_loc(col)] = green_style if prefer_higher else red_style
             elif val < ref_val:
-                styles.iloc[idx][df.columns.get_loc(col)] = 'background-color: rgba(220, 53, 69, 0.25); color: #dc3545; font-weight: bold;' if prefer_higher else 'background-color: rgba(40, 167, 69, 0.25); color: #28a745; font-weight: bold;'
+                styles.iloc[idx][df.columns.get_loc(col)] = red_style if prefer_higher else green_style
 
     return styles
 
