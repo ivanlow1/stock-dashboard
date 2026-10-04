@@ -7,7 +7,6 @@ import requests
 import streamlit as st
 import yfinance as yf
 
-# Configure Streamlit page
 st.set_page_config(
     page_title="Company Dashboard & Profile",
     page_icon="📈",
@@ -16,9 +15,8 @@ st.set_page_config(
 
 
 def get_founding_year_wikidata(company_name):
-  """Queries Wikidata SPARQL API for the inception/founding year of a company."""
+  """Queries Wikidata SPARQL API for the inception year of a company."""
   try:
-    # 1. Search Wikidata for entity ID matching the company name
     search_url = f"https://www.wikidata.org/w/api.php?action=wbsearchentities&search={urllib.parse.quote(company_name)}&language=en&format=json"
     res = requests.get(search_url, timeout=3).json()
     if not res.get("search"):
@@ -26,7 +24,6 @@ def get_founding_year_wikidata(company_name):
 
     entity_id = res["search"][0]["id"]
 
-    # 2. Query SPARQL endpoint for inception date (P571)
     sparql_query = f"""
         SELECT ?inception WHERE {{
           wd:{entity_id} wdt:P571 ?inception .
@@ -43,7 +40,6 @@ def get_founding_year_wikidata(company_name):
     bindings = sparql_res.get("results", {}).get("bindings", [])
     if bindings:
       date_str = bindings[0]["inception"]["value"]
-      # Extract 4-digit year (e.g., "2000-10-15T00:00:00Z" -> 2000)
       match = re.search(r"\b(18\d\d|19\d\d|20\d\d)\b", date_str)
       if match:
         return int(match.group(1))
@@ -62,7 +58,7 @@ def get_founding_year_scraped(ticker_symbol):
       )
   }
 
-  # Strategy A: StockAnalysis Profile
+  # Strategy A: StockAnalysis
   try:
     url = f"https://stockanalysis.com/stocks/{ticker_symbol.lower()}/company/"
     resp = requests.get(url, headers=headers, timeout=4)
@@ -76,7 +72,7 @@ def get_founding_year_scraped(ticker_symbol):
   except Exception:
     pass
 
-  # Strategy B: Yahoo Finance Profile Parsing
+  # Strategy B: Yahoo Finance HTML
   try:
     url = f"https://finance.yahoo.com/quote/{ticker_symbol}/profile"
     resp = requests.get(url, headers=headers, timeout=4)
@@ -94,7 +90,7 @@ def get_founding_year_scraped(ticker_symbol):
 
 @st.cache_data(ttl=86400)
 def get_company_profile(sym):
-  """Fetches profile details and computes company age via multi-tiered strategy."""
+  """Fetches profile details and computes company age cleanly across fallback sources."""
   try:
     t = yf.Ticker(sym)
     info = t.info
@@ -104,38 +100,46 @@ def get_company_profile(sym):
     founded_year = None
     age_label = ""
 
-    # 1. Direct check in yfinance dictionary
-    if info.get("startDate"):
-      founded_year = info.get("startDate")
-      age_label = "Founded"
-    elif info.get("firstTradeDateEpochUtc"):
-      est_year = datetime.fromtimestamp(
-          info.get("firstTradeDateEpochUtc")
-      ).year
-      calculated_age = (
-          f"Public for {current_year - est_year} years (IPO ~{est_year})"
+    # 1. Regex parse "founded in YYYY" directly from Yahoo business summary
+    summary = info.get("longBusinessSummary", "")
+    if summary:
+      match = re.search(
+          r"\bfounded\s+(?:in\s+)?(18\d\d|19\d\d|20\d\d)\b",
+          summary,
+          re.IGNORECASE,
       )
+      if match:
+        founded_year = int(match.group(1))
+        age_label = "Founded"
 
     # 2. Query Wikidata / Wikipedia
-    if not founded_year and "calculated_age" not in locals():
+    if not founded_year:
       wiki_year = get_founding_year_wikidata(company_name)
       if wiki_year:
         founded_year = wiki_year
         age_label = "Founded via Wikipedia"
 
-    # 3. Web Scrape Fallback (StockAnalysis / Yahoo structure)
-    if not founded_year and "calculated_age" not in locals():
+    # 3. Web Scrape Fallback (StockAnalysis & Yahoo Profile)
+    if not founded_year:
       scraped_year = get_founding_year_scraped(sym)
       if scraped_year:
         founded_year = scraped_year
         age_label = "Founded"
 
-    # 4. Final calculation / fallback to max trading history
+    # 4. Compile Result or Fallback to IPO / Historical Trading Data
     if founded_year:
       calculated_age = (
           f"{current_year - founded_year} years ({age_label} ~{founded_year})"
       )
-    elif "calculated_age" not in locals():
+    elif info.get("firstTradeDateEpochUtc"):
+      ipo_year = datetime.fromtimestamp(
+          info.get("firstTradeDateEpochUtc")
+      ).year
+      calculated_age = (
+          f"Public for {current_year - ipo_year} years (IPO ~{ipo_year})"
+      )
+    else:
+      # Get earliest price record date
       hist = t.history(period="max")
       if not hist.empty:
         first_year = hist.index[0].year
@@ -153,7 +157,7 @@ def get_company_profile(sym):
     return {}
 
 
-# UI Layout
+# Streamlit UI
 st.title("📊 Company Financial & Profile Dashboard")
 
 ticker = (
