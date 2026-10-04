@@ -5,5 +5,3 @@ numpy
 plotly
 ta
 vaderSentiment
-requests
-beautifulsoup4
