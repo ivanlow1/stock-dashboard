@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import requests
-from bs4 import BeautifulSoup
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -71,61 +70,45 @@ st.header("3. Competitor & Industry Peer Metrics")
 
 with st.expander("📖 What do these competitor metrics mean?"):
     st.markdown("""
-    - **P/E Ratio:** Current price relative to historical earnings. Lower = cheaper; Higher = higher growth expectations.
-    - **Forward P/E:** Price relative to estimated future earnings for the next 12 months.
-    - **PEG Ratio:** P/E adjusted for earnings growth rate. A PEG < 1.0 often indicates good value relative to growth.
-    - **ROE (%):** Efficiency in generating profit from shareholder capital. Higher is generally better.
-    - **Gross Margin (%):** Profit left over after core production costs. Reflects pricing power and efficiency.
-    - **Debt-to-Equity:** Measures financial leverage. High values signal greater debt load and risk.
+    - **Market Cap:** Total market value of the company's outstanding shares.
+    - **52-Week High / Low:** The highest and lowest prices at which a stock has traded in the past year.
+    - **Year High/Low Ratio:** Indicates how close the current stock price is relative to its 52-week peak.
     """)
 
-# Full browser headers to bypass Finviz's anti-bot check
-FINVIZ_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1'
-}
-
 @st.cache_data(ttl=3600)
-def get_finviz_metrics(symbols):
+def get_fast_peer_metrics(symbols):
     metrics_list = []
-    
     for sym in symbols:
-        url = f"https://finviz.com/quote.ashx?t={sym.upper()}"
         try:
-            res = requests.get(url, headers=FINVIZ_HEADERS, timeout=10)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                
-                # Extract key-value pairs from Finviz data table
-                table_bytes = soup.find_all("td", class_="snapshot-td2")
-                table_keys = soup.find_all("td", class_="snapshot-td2-cp")
-                
-                data_dict = {}
-                for key_elem, val_elem in zip(table_keys, table_bytes):
-                    data_dict[key_elem.text.strip()] = val_elem.text.strip()
-
-                metrics_list.append({
-                    "Ticker": sym,
-                    "P/E Ratio": data_dict.get("P/E", "N/A"),
-                    "Forward P/E": data_dict.get("Forward P/E", "N/A"),
-                    "PEG Ratio": data_dict.get("PEG", "N/A"),
-                    "ROE (%)": data_dict.get("ROE", "N/A"),
-                    "Gross Margin (%)": data_dict.get("Gross Margin", "N/A"),
-                    "Debt-to-Equity": data_dict.get("Debt/Eq", "N/A")
-                })
-            else:
-                metrics_list.append({"Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"})
-        except Exception:
-            metrics_list.append({"Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"})
+            t = yf.Ticker(sym)
+            fast = t.fast_info
             
+            last_price = fast.get("lastPrice")
+            mcap = fast.get("marketCap")
+            year_high = fast.get("yearHigh")
+            year_low = fast.get("yearLow")
+            
+            mcap_str = f"${round(mcap / 1e9, 2)}B" if mcap else "N/A"
+            price_str = f"${round(last_price, 2)}" if last_price else "N/A"
+            high_str = f"${round(year_high, 2)}" if year_high else "N/A"
+            low_str = f"${round(year_low, 2)}" if year_low else "N/A"
+
+            metrics_list.append({
+                "Ticker": sym,
+                "Price": price_str,
+                "Market Cap": mcap_str,
+                "52W High": high_str,
+                "52W Low": low_str
+            })
+        except Exception:
+            metrics_list.append({
+                "Ticker": sym, "Price": "N/A", "Market Cap": "N/A", "52W High": "N/A", "52W Low": "N/A"
+            })
     return pd.DataFrame(metrics_list).set_index("Ticker")
 
 all_tickers = [ticker_symbol] + peers
-with st.spinner("Fetching live peer metrics..."):
-    comparison_df = get_finviz_metrics(all_tickers)
+with st.spinner("Fetching peer valuation metrics via fast-info stream..."):
+    comparison_df = get_fast_peer_metrics(all_tickers)
 
 st.dataframe(comparison_df)
 
@@ -133,38 +116,35 @@ st.dataframe(comparison_df)
 st.header("4. Wall Street Analyst Price Targets & Consensus")
 
 @st.cache_data(ttl=3600)
-def get_finviz_analyst_targets(sym):
-    url = f"https://finviz.com/quote.ashx?t={sym.upper()}"
+def get_analyst_consensus(sym):
+    # Uses public open API endpoint to bypass scraping blocks
+    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=financialData"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        res = requests.get(url, headers=FINVIZ_HEADERS, timeout=10)
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            table_bytes = soup.find_all("td", class_="snapshot-td2")
-            table_keys = soup.find_all("td", class_="snapshot-td2-cp")
-            
-            data_dict = {}
-            for key_elem, val_elem in zip(table_keys, table_bytes):
-                data_dict[key_elem.text.strip()] = val_elem.text.strip()
-                
-            price_str = data_dict.get("Price", "N/A")
-            target_str = data_dict.get("Target Price", "N/A")
-            
-            curr_price = float(price_str) if price_str != "N/A" and price_str != "-" else None
-            mean_target = float(target_str) if target_str != "N/A" and target_str != "-" else None
-            
-            return curr_price, mean_target
+            data = res.json()
+            result = data.get('quoteSummary', {}).get('result', [])
+            if result:
+                financial_data = result[0].get('financialData', {})
+                current = financial_data.get('currentPrice', {}).get('raw')
+                target = financial_data.get('targetMeanPrice', {}).get('raw')
+                low = financial_data.get('targetLowPrice', {}).get('raw')
+                high = financial_data.get('targetHighPrice', {}).get('raw')
+                return current, target, low, high
     except Exception:
         pass
-    return None, None
+    return None, None, None, None
 
-curr_price, mean_target = get_finviz_analyst_targets(ticker_symbol)
+current_price, mean_target, low_target, high_target = get_analyst_consensus(ticker_symbol)
 
-if mean_target and curr_price:
-    upside = round(((mean_target - curr_price) / curr_price) * 100, 2)
+if mean_target and current_price:
+    upside = round(((mean_target - current_price) / current_price) * 100, 2)
     upside_str = f"{'+' if upside > 0 else ''}{upside}%"
 
-    c1, c2 = st.columns(2)
-    c1.metric("Current Price", f"${curr_price}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Current Price", f"${current_price}")
     c2.metric("Mean Price Target", f"${mean_target}", upside_str)
+    c3.metric("Target Range", f"${low_target} - ${high_target}" if low_target and high_target else "N/A")
 else:
-    st.warning("Analyst price target data is currently unavailable.")
+    st.warning("Analyst price target data is currently unavailable on standard public streams.")
