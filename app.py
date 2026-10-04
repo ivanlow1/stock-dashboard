@@ -80,31 +80,40 @@ with st.expander("📖 What do these competitor metrics mean?"):
 
 @st.cache_data(ttl=3600)
 def get_peer_metrics_yq(symbols):
-    yq = YQTicker(symbols)
-    summary = yq.summary_detail
-    fin = yq.financial_data
-    stats = yq.key_stats
-    
     metrics_list = []
+    
     for sym in symbols:
-        s_data = summary.get(sym, {}) if isinstance(summary, dict) else {}
-        f_data = fin.get(sym, {}) if isinstance(fin, dict) else {}
-        k_data = stats.get(sym, {}) if isinstance(stats, dict) else {}
-        
-        def fmt_val(val, scale=1):
-            if isinstance(val, (int, float)) and not np.isnan(val):
-                return round(val * scale, 2)
-            return "N/A"
+        try:
+            yq = YQTicker(sym)
+            summary = yq.summary_detail
+            fin = yq.financial_data
+            stats = yq.key_stats
+            
+            # Safe dict extraction in case yahooquery returns an error string or dict
+            s_data = summary.get(sym, {}) if isinstance(summary, dict) and isinstance(summary.get(sym), dict) else {}
+            f_data = fin.get(sym, {}) if isinstance(fin, dict) and isinstance(fin.get(sym), dict) else {}
+            k_data = stats.get(sym, {}) if isinstance(stats, dict) and isinstance(stats.get(sym), dict) else {}
+            
+            def fmt_val(val, scale=1):
+                if isinstance(val, (int, float)) and not np.isnan(val):
+                    return round(val * scale, 2)
+                return "N/A"
 
-        metrics_list.append({
-            "Ticker": sym,
-            "P/E Ratio": fmt_val(s_data.get("trailingPE")),
-            "Forward P/E": fmt_val(s_data.get("forwardPE")),
-            "PEG Ratio": fmt_val(k_data.get("pegRatio")),
-            "ROE (%)": fmt_val(f_data.get("returnOnEquity"), scale=100),
-            "Gross Margin (%)": fmt_val(f_data.get("grossMargins"), scale=100),
-            "Debt-to-Equity": fmt_val(f_data.get("debtToEquity"))
-        })
+            metrics_list.append({
+                "Ticker": sym,
+                "P/E Ratio": fmt_val(s_data.get("trailingPE")),
+                "Forward P/E": fmt_val(s_data.get("forwardPE")),
+                "PEG Ratio": fmt_val(k_data.get("pegRatio")),
+                "ROE (%)": fmt_val(f_data.get("returnOnEquity"), scale=100),
+                "Gross Margin (%)": fmt_val(f_data.get("grossMargins"), scale=100),
+                "Debt-to-Equity": fmt_val(f_data.get("debtToEquity"))
+            })
+        except Exception:
+            metrics_list.append({
+                "Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", 
+                "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"
+            })
+            
     return pd.DataFrame(metrics_list).set_index("Ticker")
 
 all_tickers = [ticker_symbol] + peers
@@ -112,6 +121,50 @@ with st.spinner("Fetching live peer metrics via YahooQuery..."):
     comparison_df = get_peer_metrics_yq(all_tickers)
 
 st.dataframe(comparison_df)
+
+# --- PANEL 4: WALL STREET ANALYST TARGETS & RATINGS ---
+st.header("4. Wall Street Analyst Price Targets & Consensus")
+
+@st.cache_data(ttl=3600)
+def get_analysts_yq(sym):
+    try:
+        yq = YQTicker(sym)
+        price_dict = yq.price
+        fin_dict = yq.financial_data
+        
+        price_data = price_dict.get(sym, {}) if isinstance(price_dict, dict) and isinstance(price_dict.get(sym), dict) else {}
+        target_data = fin_dict.get(sym, {}) if isinstance(fin_dict, dict) and isinstance(fin_dict.get(sym), dict) else {}
+        
+        current = price_data.get("regularMarketPrice")
+        mean_target = target_data.get("targetMeanPrice")
+        low_target = target_data.get("targetLowPrice")
+        high_target = target_data.get("targetHighPrice")
+        
+        return current, mean_target, low_target, high_target
+    except Exception:
+        return None, None, None, None
+
+with st.spinner("Fetching analyst price targets..."):
+    current, mean_target, low_target, high_target = get_analysts_yq(ticker_symbol)
+
+if mean_target and current and isinstance(mean_target, (int, float)) and isinstance(current, (int, float)):
+    upside = round(((mean_target - current) / current) * 100, 2)
+    upside_str = f"{'+' if upside > 0 else ''}{upside}%"
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Current Price", f"${round(current, 2)}")
+    c2.metric("Mean Price Target", f"${round(mean_target, 2)}", upside_str)
+    c3.metric("Target Range", f"${round(low_target, 2)} - ${round(high_target, 2)}")
+
+    if low_target and high_target and current:
+        st.subheader("Price Target Spread")
+        st.write(f"**Low:** ${round(low_target, 2)} | **Current:** ${round(current, 2)} | **Mean Target:** ${round(mean_target, 2)} | **High:** ${round(high_target, 2)}")
+        spread = high_target - low_target
+        if spread > 0:
+            pos = min(max((current - low_target) / spread, 0.0), 1.0)
+            st.progress(pos, text=f"Current Price Position in Analyst Range: {round(pos * 100, 1)}%")
+else:
+    st.warning("Analyst price target data is currently unavailable for this ticker.")
 
 # --- PANEL 4: WALL STREET ANALYST TARGETS & RATINGS ---
 st.header("4. Wall Street Analyst Price Targets & Consensus")
