@@ -79,21 +79,27 @@ with st.expander("📖 What do these competitor metrics mean?"):
     - **Debt-to-Equity:** Measures financial leverage. High values signal greater debt load and risk.
     """)
 
+# Full browser headers to bypass Finviz's anti-bot check
+FINVIZ_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1'
+}
+
 @st.cache_data(ttl=3600)
 def get_finviz_metrics(symbols):
     metrics_list = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    }
     
     for sym in symbols:
         url = f"https://finviz.com/quote.ashx?t={sym.upper()}"
         try:
-            res = requests.get(url, headers=headers, timeout=5)
+            res = requests.get(url, headers=FINVIZ_HEADERS, timeout=10)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 
-                # Extract key-value cells from Finviz snapshot table
+                # Extract key-value pairs from Finviz data table
                 table_bytes = soup.find_all("td", class_="snapshot-td2")
                 table_keys = soup.find_all("td", class_="snapshot-td2-cp")
                 
@@ -118,7 +124,7 @@ def get_finviz_metrics(symbols):
     return pd.DataFrame(metrics_list).set_index("Ticker")
 
 all_tickers = [ticker_symbol] + peers
-with st.spinner("Fetching live peer metrics from Finviz..."):
+with st.spinner("Fetching live peer metrics..."):
     comparison_df = get_finviz_metrics(all_tickers)
 
 st.dataframe(comparison_df)
@@ -129,11 +135,8 @@ st.header("4. Wall Street Analyst Price Targets & Consensus")
 @st.cache_data(ttl=3600)
 def get_finviz_analyst_targets(sym):
     url = f"https://finviz.com/quote.ashx?t={sym.upper()}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    }
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=FINVIZ_HEADERS, timeout=10)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             table_bytes = soup.find_all("td", class_="snapshot-td2")
@@ -146,8 +149,8 @@ def get_finviz_analyst_targets(sym):
             price_str = data_dict.get("Price", "N/A")
             target_str = data_dict.get("Target Price", "N/A")
             
-            curr_price = float(price_str) if price_str != "N/A" else None
-            mean_target = float(target_str) if target_str != "N/A" else None
+            curr_price = float(price_str) if price_str != "N/A" and price_str != "-" else None
+            mean_target = float(target_str) if target_str != "N/A" and target_str != "-" else None
             
             return curr_price, mean_target
     except Exception:
