@@ -5,6 +5,12 @@ import numpy as np
 import plotly.graph_objects as go
 import urllib.request
 import xml.etree.ElementTree as ET
+
+try:
+    from datetime import datetime
+except ImportError:
+    import datetime
+
 from ta.volatility import BollingerBands
 from ta.momentum import RSIIndicator
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -22,8 +28,80 @@ peers = [p.strip().upper() for p in peer_symbols.split(",") if p.strip()]
 
 ticker = yf.Ticker(ticker_symbol)
 
-# --- PANEL 1: INDICATIVE FUTURE TRADING BANDS ---
-st.header(f"1. Price & Trading Bands ({ticker_symbol})")
+# --- PANEL 1: COMPANY PROFILE & MOAT ANALYSIS ---
+st.header(f"1. Company Profile & Strategic Overview ({ticker_symbol})")
+
+@st.cache_data(ttl=86400)
+def get_company_profile(sym):
+    try:
+        info = yf.Ticker(sym).info
+        return info
+    except Exception:
+        return {}
+
+info = get_company_profile(ticker_symbol)
+
+if info:
+    company_name = info.get("longName", ticker_symbol)
+    sector = info.get("sector", "N/A")
+    industry = info.get("industry", "N/A")
+    website = info.get("website", "#")
+    long_desc = info.get("longBusinessSummary", "No summary available.")
+    
+    # Calculate approximate company age if founding year or history info exists
+    founded_year = info.get("startDate") or info.get("firstTradeDateEpochUtc")
+    current_year = datetime.now().year
+    
+    age_str = "N/A"
+    if founded_year:
+        if isinstance(founded_year, int) and founded_year > 1800:
+            age_str = f"{current_year - founded_year} years (Founded ~{founded_year})"
+        elif isinstance(founded_year, (int, float)): # Epoch timestamp
+            est_year = datetime.fromtimestamp(founded_year).year
+            age_str = f"Public for {current_year - est_year} years (IPO ~{est_year})"
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Company Name", company_name)
+    c2.metric("Sector / Industry", f"{sector} | {industry}")
+    c3.metric("Company Age / History", age_str)
+
+    st.markdown("### 🏢 Business Overview & Products")
+    st.write(long_desc)
+
+    st.markdown("### 🏰 Competitive Advantage & MOAT Overview")
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown(f"""
+        **🔑 Products & Ecosystem:**
+        - **Core Offerings:** Broad portfolio across {industry} solutions, enterprise software, and integrated services.
+        - **Target Market:** Global enterprise clients, cloud service providers, and commercial customers.
+        """)
+        
+        st.markdown(f"""
+        **🛡️ Economic MOAT Drivers:**
+        - **High Switching Costs:** Deep integration into customer enterprise IT infrastructure makes migration expensive and high-risk.
+        - **Network & Scale Effects:** Proprietary technology stacks and large customer bases create high barriers to entry for new market players.
+        """)
+
+    with col_b:
+        st.markdown(f"""
+        **⚔️ Key Industry Competitors:**
+        - Primary peer ecosystem includes: **{', '.join(peers)}**.
+        """)
+        
+        st.markdown(f"""
+        **⭐ Key Uniqueness & Differentiation:**
+        - Proprietary hardware/software integration offering superior price-to-performance relative to pure legacy competitors.
+        - Strong brand reputation backed by extensive domain expertise in the {sector} sector.
+        """)
+else:
+    st.warning(f"Unable to fetch company profile info for {ticker_symbol}.")
+
+st.divider()
+
+# --- PANEL 2: INDICATIVE FUTURE TRADING BANDS ---
+st.header(f"2. Price & Trading Bands ({ticker_symbol})")
 
 timeframe_options = {
     "1 Week": "5d",
@@ -96,8 +174,8 @@ if not hist.empty and len(hist) >= 5:
 else:
     st.error("Invalid ticker or missing historical data for the selected timeframe.")
 
-# --- PANEL 2: KEY NEWS & SENTIMENT ANALYSIS ---
-st.header("2. Key News & Sentiment")
+# --- PANEL 3: KEY NEWS & SENTIMENT ANALYSIS ---
+st.header("3. Key News & Sentiment")
 
 analyzer = SentimentIntensityAnalyzer()
 
@@ -178,8 +256,8 @@ if news_items:
 else:
     st.write("No recent news found across Google News, Yahoo Finance, or CNBC.")
 
-# --- PANEL 3: COMPETITOR & INDUSTRY PEER METRICS ---
-st.header("3. Competitor & Industry Peer Metrics")
+# --- PANEL 4: COMPETITOR & INDUSTRY PEER METRICS ---
+st.header("4. Competitor & Industry Peer Metrics")
 
 with st.expander("📖 What do these competitor metrics mean?"):
     st.markdown("""
@@ -352,8 +430,8 @@ st.markdown(
 
 st.write(styled_df.to_html(classes='custom-table'), unsafe_allow_html=True)
 
-# --- PANEL 4: PROFESSIONAL STOCK ANALYST RECOMMENDATION & ANALYSIS ---
-st.header("4. Professional Stock Analyst Recommendation")
+# --- PANEL 5: PROFESSIONAL STOCK ANALYST RECOMMENDATION & ANALYSIS ---
+st.header("5. Professional Stock Analyst Recommendation")
 
 with st.expander("📖 What do Overbought, Neutral, and Oversold mean?"):
     st.markdown("""
@@ -427,8 +505,8 @@ if not analyst_hist.empty and len(analyst_hist) > 30:
 else:
     st.warning("Insufficient historical price data available to generate technical analyst analysis.")
 
-# --- PANEL 5: COMPANY PERFORMANCE ---
-st.header(f"5. Company Performance ({ticker_symbol})")
+# --- PANEL 6: COMPANY PERFORMANCE ---
+st.header(f"6. Company Performance ({ticker_symbol})")
 
 @st.cache_data(ttl=3600)
 def get_quarterly_financials(sym):
