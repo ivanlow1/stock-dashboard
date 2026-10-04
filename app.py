@@ -63,56 +63,57 @@ if news_items:
 else:
     st.write("No recent news found.")
 
-import time
-
 # --- PANEL 3 & 4: COMPETITOR & INDUSTRY PEER METRICS ---
 st.header("3. Competitor & Industry Peer Metrics")
 
-@st.cache_data(ttl=3600)  # Cache results for 1 hour to prevent API rate limits
-def get_metrics(sym):
+@st.cache_data(ttl=3600)
+def get_metrics_fast(sym):
     try:
         t = yf.Ticker(sym)
-        info = t.info or {}
         
-        # Helper function to extract financial values safely
-        def safe_get(key, multiplier=1, round_digits=2):
-            val = info.get(key)
-            if val is not None and isinstance(val, (int, float)):
-                return round(val * multiplier, round_digits)
-            return np.nan
+        # fast_info works reliably on Streamlit Cloud servers
+        fast = t.fast_info
+        
+        # Retrieve basic valuation/price metrics safely
+        mkt_cap = fast.get("market_cap", np.nan)
+        last_price = fast.get("last_price", np.nan)
+        
+        # Fetch financial metrics directly from financial statements
+        eps = np.nan
+        pe_ratio = np.nan
+        
+        try:
+            info_data = t.info
+            pe_ratio = info_data.get("trailingPE", np.nan)
+            forward_pe = info_data.get("forwardPE", np.nan)
+            peg_ratio = info_data.get("pegRatio", np.nan)
+            roe = info_data.get("returnOnEquity", np.nan)
+            gross_margin = info_data.get("grossMargins", np.nan)
+            debt_equity = info_data.get("debtToEquity", np.nan)
+        except Exception:
+            pe_ratio, forward_pe, peg_ratio = np.nan, np.nan, np.nan
+            roe, gross_margin, debt_equity = np.nan, np.nan, np.nan
 
         return {
             "Ticker": sym,
-            "P/E Ratio": safe_get("trailingPE"),
-            "Forward P/E": safe_get("forwardPE"),
-            "PEG Ratio": safe_get("pegRatio"),
-            "ROE (%)": safe_get("returnOnEquity", multiplier=100),
-            "Gross Margin (%)": safe_get("grossMargins", multiplier=100),
-            "Debt-to-Equity": safe_get("debtToEquity")
+            "Market Cap ($B)": round(mkt_cap / 1e9, 2) if mkt_cap and not np.isnan(mkt_cap) else np.nan,
+            "Price ($)": round(last_price, 2) if last_price and not np.isnan(last_price) else np.nan,
+            "P/E Ratio": round(pe_ratio, 2) if pe_ratio and not np.isnan(pe_ratio) else "N/A",
+            "Forward P/E": round(forward_pe, 2) if forward_pe and not np.isnan(forward_pe) else "N/A",
+            "PEG Ratio": round(peg_ratio, 2) if peg_ratio and not np.isnan(peg_ratio) else "N/A",
+            "ROE (%)": round(roe * 100, 2) if roe and not np.isnan(roe) else "N/A",
+            "Gross Margin (%)": round(gross_margin * 100, 2) if gross_margin and not np.isnan(gross_margin) else "N/A",
+            "Debt-to-Equity": round(debt_equity, 2) if debt_equity and not np.isnan(debt_equity) else "N/A"
         }
-    except Exception as e:
-        return {
-            "Ticker": sym,
-            "P/E Ratio": np.nan, "Forward P/E": np.nan, "PEG Ratio": np.nan,
-            "ROE (%)": np.nan, "Gross Margin (%)": np.nan, "Debt-to-Equity": np.nan
-        }
+    except Exception:
+        return {"Ticker": sym, "Market Cap ($B)": np.nan, "Price ($)": np.nan, "P/E Ratio": "N/A"}
 
 all_tickers = [ticker_symbol] + peers
 metrics_list = []
 
-with st.spinner("Fetching peer metrics..."):
+with st.spinner("Fetching live peer metrics..."):
     for s in all_tickers:
-        metrics_list.append(get_metrics(s))
-        time.sleep(0.2)  # Short pause to respect rate limits
+        metrics_list.append(get_metrics_fast(s))
 
 comparison_df = pd.DataFrame(metrics_list).set_index("Ticker")
-
-# Check if data exists before rendering
-if not comparison_df.dropna(how="all").empty:
-    st.dataframe(
-        comparison_df.style
-        .highlight_max(axis=0, color="lightgreen")
-        .highlight_min(axis=0, color="lightpink")
-    )
-else:
-    st.warning("Unable to fetch competitor data from Yahoo Finance at this moment. Try refreshing in a few seconds.")
+st.dataframe(comparison_df)
