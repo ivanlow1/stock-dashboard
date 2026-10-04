@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import requests
+from bs4 import BeautifulSoup
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -83,14 +84,13 @@ with st.expander("📖 What do these competitor metrics mean?"):
 @st.cache_data(ttl=3600)
 def get_expanded_peer_metrics(symbols):
     metrics_list = []
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
     for sym in symbols:
         try:
             t = yf.Ticker(sym)
-            fast = t.fast_info
             
-            # 1. Existing Fast Info metrics
+            # 1. Fast Info Stream Data
+            fast = t.fast_info
             last_price = fast.get("lastPrice")
             mcap = fast.get("marketCap")
             year_high = fast.get("yearHigh")
@@ -101,34 +101,20 @@ def get_expanded_peer_metrics(symbols):
             high_str = f"${round(year_high, 2)}" if year_high else "N/A"
             low_str = f"${round(year_low, 2)}" if year_low else "N/A"
 
-            # 2. Additional Financial Valuation Metrics via direct summary query
-            url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=summaryDetail,financialData,defaultKeyStatistics"
-            pe_ratio, fwd_pe, peg_ratio, roe, gross_margin, debt_to_eq = "N/A", "N/A", "N/A", "N/A", "N/A", "N/A"
+            # 2. Comprehensive Info Object extraction
+            info = t.info
+            
+            def fmt_val(val, is_pct=False, scale=1):
+                if val is not None and isinstance(val, (int, float)) and not np.isnan(val):
+                    return f"{round(val * scale, 2)}%" if is_pct else str(round(val * scale, 2))
+                return "N/A"
 
-            try:
-                res = requests.get(url, headers=headers, timeout=5)
-                if res.status_code == 200:
-                    data = res.json().get('quoteSummary', {}).get('result', [{}])[0]
-                    summary_detail = data.get('summaryDetail', {})
-                    fin_data = data.get('financialData', {})
-                    key_stats = data.get('defaultKeyStatistics', {})
-
-                    def get_raw_or_fmt(d, key, is_pct=False, scale=1):
-                        val = d.get(key, {})
-                        if isinstance(val, dict) and 'raw' in val:
-                            num = val['raw']
-                            if isinstance(num, (int, float)):
-                                return f"{round(num * scale, 2)}%" if is_pct else round(num * scale, 2)
-                        return "N/A"
-
-                    pe_ratio = get_raw_or_fmt(summary_detail, 'trailingPE')
-                    fwd_pe = get_raw_or_fmt(summary_detail, 'forwardPE')
-                    peg_ratio = get_raw_or_fmt(key_stats, 'pegRatio')
-                    roe = get_raw_or_fmt(fin_data, 'returnOnEquity', is_pct=True, scale=100)
-                    gross_margin = get_raw_or_fmt(fin_data, 'grossMargins', is_pct=True, scale=100)
-                    debt_to_eq = get_raw_or_fmt(fin_data, 'debtToEquity')
-            except Exception:
-                pass
+            pe_ratio = fmt_val(info.get("trailingPE"))
+            fwd_pe = fmt_val(info.get("forwardPE"))
+            peg_ratio = fmt_val(info.get("pegRatio"))
+            roe = fmt_val(info.get("returnOnEquity"), is_pct=True, scale=100)
+            gross_margin = fmt_val(info.get("grossMargins"), is_pct=True, scale=100)
+            debt_to_eq = fmt_val(info.get("debtToEquity"))
 
             metrics_list.append({
                 "Ticker": sym,
@@ -162,23 +148,16 @@ st.header("4. Wall Street Analyst Price Targets & Consensus")
 
 @st.cache_data(ttl=3600)
 def get_analyst_consensus(sym):
-    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=financialData"
-    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            result = data.get('quoteSummary', {}).get('result', [])
-            if result:
-                financial_data = result[0].get('financialData', {})
-                current = financial_data.get('currentPrice', {}).get('raw')
-                target = financial_data.get('targetMeanPrice', {}).get('raw')
-                low = financial_data.get('targetLowPrice', {}).get('raw')
-                high = financial_data.get('targetHighPrice', {}).get('raw')
-                return current, target, low, high
+        t = yf.Ticker(sym)
+        info = t.info
+        current = info.get("currentPrice") or info.get("regularMarketPrice") or t.fast_info.get("lastPrice")
+        target = info.get("targetMeanPrice")
+        low = info.get("targetLowPrice")
+        high = info.get("targetHighPrice")
+        return current, target, low, high
     except Exception:
-        pass
-    return None, None, None, None
+        return None, None, None, None
 
 current_price, mean_target, low_target, high_target = get_analyst_consensus(ticker_symbol)
 
@@ -187,8 +166,8 @@ if mean_target and current_price:
     upside_str = f"{'+' if upside > 0 else ''}{upside}%"
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Current Price", f"${current_price}")
-    c2.metric("Mean Price Target", f"${mean_target}", upside_str)
-    c3.metric("Target Range", f"${low_target} - ${high_target}" if low_target and high_target else "N/A")
+    c1.metric("Current Price", f"${round(current_price, 2)}")
+    c2.metric("Mean Price Target", f"${round(mean_target, 2)}", upside_str)
+    c3.metric("Target Range", f"${round(low_target, 2)} - ${round(high_target, 2)}" if low_target and high_target else "N/A")
 else:
-    st.warning("Analyst price target data is currently unavailable on standard public streams.")
+    st.warning("Analyst price target data is currently unavailable.")
