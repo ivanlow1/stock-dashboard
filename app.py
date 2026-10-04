@@ -316,7 +316,6 @@ def style_relative_to_ref(df):
 styled_df = df_raw.style.apply(style_relative_to_ref, axis=None)\
     .format("{:.2f}", na_rep="N/A")
 
-# Custom CSS wrapper to ensure full table dark mode styling and visible background colors
 html_table = f"""
 <style>
     .custom-table-container {{
@@ -431,3 +430,85 @@ if not analyst_hist.empty and len(analyst_hist) > 30:
     """)
 else:
     st.warning("Insufficient historical price data available to generate technical analyst analysis.")
+
+# --- PANEL 5: COMPANY PERFORMANCE ---
+st.header(f"5. Company Performance ({ticker_symbol})")
+
+@st.cache_data(ttl=3600)
+def get_quarterly_financials(sym):
+    t = yf.Ticker(sym)
+    q_financials = t.quarterly_financials
+    if q_financials.empty:
+        return pd.DataFrame()
+    return q_financials
+
+q_fin = get_quarterly_financials(ticker_symbol)
+
+if not q_fin.empty and q_fin.shape[1] >= 1:
+    cols = list(q_fin.columns)
+    
+    # Map metrics of interest
+    metric_keys = {
+        "Total Revenue": "Revenue ($M)",
+        "Gross Profit": "Gross Profit ($M)",
+        "Operating Income": "Operating Income ($M)",
+        "Net Income": "Net Income ($M)",
+        "EBITDA": "EBITDA ($M)"
+    }
+    
+    rows = []
+    
+    q0_date = cols[0].strftime("%Y-%m-%d") if hasattr(cols[0], "strftime") else str(cols[0])
+    q1_date = cols[1].strftime("%Y-%m-%d") if len(cols) > 1 and hasattr(cols[1], "strftime") else (str(cols[1]) if len(cols) > 1 else "N/A")
+    q4_date = cols[4].strftime("%Y-%m-%d") if len(cols) > 4 and hasattr(cols[4], "strftime") else (str(cols[4]) if len(cols) > 4 else "N/A")
+
+    for key, display_name in metric_keys.items():
+        if key in q_fin.index:
+            v0 = q_fin.loc[key].iloc[0] / 1e6 if pd.notna(q_fin.loc[key].iloc[0]) else np.nan
+            v1 = q_fin.loc[key].iloc[1] / 1e6 if len(cols) > 1 and pd.notna(q_fin.loc[key].iloc[1]) else np.nan
+            v4 = q_fin.loc[key].iloc[4] / 1e6 if len(cols) > 4 and pd.notna(q_fin.loc[key].iloc[4]) else np.nan
+
+            qoq_pct = ((v0 - v1) / abs(v1)) * 100 if pd.notna(v0) and pd.notna(v1) and v1 != 0 else np.nan
+            yoy_pct = ((v0 - v4) / abs(v4)) * 100 if pd.notna(v0) and pd.notna(v4) and v4 != 0 else np.nan
+
+            rows.append({
+                "Financial Metric": display_name,
+                f"Latest ({q0_date})": round(v0, 2) if pd.notna(v0) else np.nan,
+                f"Prior Qtr ({q1_date})": round(v1, 2) if pd.notna(v1) else np.nan,
+                "QoQ Growth (%)": round(qoq_pct, 2) if pd.notna(qoq_pct) else np.nan,
+                f"Prior Year Qtr ({q4_date})": round(v4, 2) if pd.notna(v4) else np.nan,
+                "YoY Growth (%)": round(yoy_pct, 2) if pd.notna(yoy_pct) else np.nan
+            })
+
+    df_perf = pd.DataFrame(rows).set_index("Financial Metric")
+
+    def style_performance(df):
+        styles = pd.DataFrame('', index=df.index, columns=df.columns)
+        green_style = 'background-color: #1e4620; color: #4cd964; font-weight: bold;'
+        red_style = 'background-color: #5c1d24; color: #ff6b6b; font-weight: bold;'
+
+        for idx in range(len(df)):
+            for col in df.columns:
+                if "Growth (%)" in col:
+                    val = df.iloc[idx][col]
+                    if pd.notna(val):
+                        if val > 0:
+                            styles.iloc[idx][df.columns.get_loc(col)] = green_style
+                        elif val < 0:
+                            styles.iloc[idx][df.columns.get_loc(col)] = red_style
+        return styles
+
+    styled_perf = df_perf.style.apply(style_performance, axis=None)\
+        .format("{:+.2f}%", subset=[c for c in df_perf.columns if "Growth" in c], na_rep="N/A")\
+        .format("{:,.2f}", subset=[c for c in df_perf.columns if "Growth" not in c], na_rep="N/A")
+
+    perf_html = f"""
+    <div class="custom-table-container">
+        {styled_perf.to_html(classes='custom-table')}
+    </div>
+    """
+
+    st.write(perf_html, unsafe_allow_html=True)
+
+else:
+    st.warning("Quarterly financial report data is currently unavailable for this ticker.")
