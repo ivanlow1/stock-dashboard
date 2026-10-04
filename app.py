@@ -14,7 +14,10 @@ st.title("📈 Interactive Stock Ticker Dashboard")
 
 # --- SIDEBAR INPUTS ---
 ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="FTNT").upper()
-peer_symbols = st.sidebar.text_input("Enter Peers (comma-separated):", value="MSFT, GOOGL, NVDA")
+peer_symbols = st.sidebar.text_input(
+    "Enter Peers (comma-separated):", 
+    value="MU, META, AMZN, AVGO, MSFT, GOOGL, NVDA"
+)
 peers = [p.strip().upper() for p in peer_symbols.split(",") if p.strip()]
 
 ticker = yf.Ticker(ticker_symbol)
@@ -42,7 +45,6 @@ period_param = timeframe_options[selected_label]
 hist = ticker.history(period=period_param)
 
 if not hist.empty and len(hist) >= 5:
-    # Calculate Bollinger Bands
     window_size = min(20, len(hist))
     indicator_bb = BollingerBands(close=hist["Close"], window=window_size, window_dev=2)
     hist["BB_Upper"] = indicator_bb.bollinger_hband()
@@ -51,7 +53,6 @@ if not hist.empty and len(hist) >= 5:
 
     fig = go.Figure()
 
-    # Candlestick chart
     fig.add_trace(go.Candlestick(
         x=hist.index, 
         open=hist['Open'], 
@@ -61,7 +62,6 @@ if not hist.empty and len(hist) >= 5:
         name='Price'
     ))
 
-    # Lower Band
     fig.add_trace(go.Scatter(
         x=hist.index, 
         y=hist['BB_Lower'], 
@@ -70,7 +70,6 @@ if not hist.empty and len(hist) >= 5:
         showlegend=True
     ))
 
-    # Upper Band with region fill
     fig.add_trace(go.Scatter(
         x=hist.index, 
         y=hist['BB_Upper'], 
@@ -81,7 +80,6 @@ if not hist.empty and len(hist) >= 5:
         showlegend=True
     ))
 
-    # Moving Average
     fig.add_trace(go.Scatter(
         x=hist.index, 
         y=hist['SMA_20'], 
@@ -187,14 +185,14 @@ with st.expander("📖 What do these competitor metrics mean?"):
     st.markdown("""
     - **Market Cap:** Total market value of the company's outstanding shares.
     - **52W High / Low:** Highest and lowest prices at which the stock traded over the past year.
-    - **Trailing P/E:** Current price divided by trailing 12-month net income per share.
-    - **Gross Margin (%):** Percentage of revenue retained after deducting cost of goods sold.
-    - **ROE (%):** Return on Equity; Net Income divided by total Stockholder Equity.
-    - **Debt-to-Equity:** Ratio of total debt to shareholder equity.
+    - **Trailing P/E:** Current price divided by trailing 12-month net income per share (Lower = often cheaper/better value).
+    - **Gross Margin (%):** Percentage of revenue retained after deducting cost of goods sold (Higher = better profitability).
+    - **ROE (%):** Return on Equity; Net Income divided by total Stockholder Equity (Higher = better returns).
+    - **Debt-to-Equity:** Ratio of total debt to shareholder equity (Lower = lower financial risk).
     """)
 
 @st.cache_data(ttl=3600)
-def get_peer_metrics(symbols):
+def get_raw_peer_metrics(symbols):
     metrics_list = []
 
     for sym in symbols:
@@ -207,13 +205,8 @@ def get_peer_metrics(symbols):
             year_high = fast.get("yearHigh")
             year_low = fast.get("yearLow")
             shares = fast.get("shares")
-            
-            price_str = f"${round(last_price, 2)}" if last_price else "N/A"
-            mcap_str = f"${round(mcap / 1e9, 2)}B" if mcap else "N/A"
-            high_str = f"${round(year_high, 2)}" if year_high else "N/A"
-            low_str = f"${round(year_low, 2)}" if year_low else "N/A"
 
-            pe_str, margin_str, roe_str, de_str = "N/A", "N/A", "N/A", "N/A"
+            pe_val, margin_val, roe_val, de_val = np.nan, np.nan, np.nan, np.nan
 
             try:
                 income = t.financials
@@ -223,49 +216,86 @@ def get_peer_metrics(symbols):
                     net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
                     revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
                     gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
-
                     equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
                     total_debt = balance.loc['Total Debt'].dropna().iloc[0] if 'Total Debt' in balance.index else None
 
-                    if net_income and shares and net_income > 0:
+                    if net_income and shares and net_income > 0 and last_price:
                         eps = net_income / shares
-                        pe_str = str(round(last_price / eps, 2))
+                        pe_val = round(last_price / eps, 2)
 
                     if gross_profit and revenue:
-                        margin_str = f"{round((gross_profit / revenue) * 100, 2)}%"
+                        margin_val = round((gross_profit / revenue) * 100, 2)
 
                     if net_income and equity:
-                        roe_str = f"{round((net_income / equity) * 100, 2)}%"
+                        roe_val = round((net_income / equity) * 100, 2)
 
                     if total_debt is not None and equity:
-                        de_str = str(round(total_debt / equity, 2))
+                        de_val = round(total_debt / equity, 2)
             except Exception:
                 pass
 
             metrics_list.append({
                 "Ticker": sym,
-                "Price": price_str,
-                "Market Cap": mcap_str,
-                "52W High": high_str,
-                "52W Low": low_str,
-                "P/E": pe_str,
-                "Gross Margin": margin_str,
-                "ROE": roe_str,
-                "Debt/Equity": de_str
+                "Price": round(last_price, 2) if last_price else np.nan,
+                "Market Cap ($B)": round(mcap / 1e9, 2) if mcap else np.nan,
+                "52W High": round(year_high, 2) if year_high else np.nan,
+                "52W Low": round(year_low, 2) if year_low else np.nan,
+                "P/E": pe_val,
+                "Gross Margin (%)": margin_val,
+                "ROE (%)": roe_val,
+                "Debt/Equity": de_val
             })
         except Exception:
             metrics_list.append({
-                "Ticker": sym, "Price": "N/A", "Market Cap": "N/A", "52W High": "N/A", "52W Low": "N/A",
-                "P/E": "N/A", "Gross Margin": "N/A", "ROE": "N/A", "Debt/Equity": "N/A"
+                "Ticker": sym, "Price": np.nan, "Market Cap ($B)": np.nan, "52W High": np.nan, 
+                "52W Low": np.nan, "P/E": np.nan, "Gross Margin (%)": np.nan, "ROE (%)": np.nan, "Debt/Equity": np.nan
             })
 
     return pd.DataFrame(metrics_list).set_index("Ticker")
 
 all_tickers = [ticker_symbol] + peers
 with st.spinner("Fetching live peer metrics..."):
-    comparison_df = get_peer_metrics(all_tickers)
+    df_raw = get_raw_peer_metrics(all_tickers)
 
-st.dataframe(comparison_df)
+def style_relative_to_ref(df):
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    if len(df) <= 1:
+        return styles
+
+    ref_row = df.iloc[0]
+
+    higher_is_better = {
+        "Price": True,
+        "Market Cap ($B)": True,
+        "52W High": True,
+        "52W Low": False,
+        "P/E": False,
+        "Gross Margin (%)": True,
+        "ROE (%)": True,
+        "Debt/Equity": False
+    }
+
+    for idx in range(1, len(df)):
+        for col in df.columns:
+            val = df.iloc[idx][col]
+            ref_val = ref_row[col]
+
+            if pd.isna(val) or pd.isna(ref_val):
+                continue
+
+            prefer_higher = higher_is_better.get(col, True)
+
+            if val > ref_val:
+                styles.iloc[idx][df.columns.get_loc(col)] = 'background-color: rgba(40, 167, 69, 0.25); color: #28a745; font-weight: bold;' if prefer_higher else 'background-color: rgba(220, 53, 69, 0.25); color: #dc3545; font-weight: bold;'
+            elif val < ref_val:
+                styles.iloc[idx][df.columns.get_loc(col)] = 'background-color: rgba(220, 53, 69, 0.25); color: #dc3545; font-weight: bold;' if prefer_higher else 'background-color: rgba(40, 167, 69, 0.25); color: #28a745; font-weight: bold;'
+
+    return styles
+
+styled_df = df_raw.style.apply(style_relative_to_ref, axis=None)\
+    .format("{:.2f}", na_rep="N/A")
+
+st.dataframe(styled_df, use_container_width=True)
 
 # --- PANEL 4: PROFESSIONAL STOCK ANALYST RECOMMENDATION & ANALYSIS ---
 st.header("4. Professional Stock Analyst Recommendation")
