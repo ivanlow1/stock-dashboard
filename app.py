@@ -71,44 +71,89 @@ st.header("3. Competitor & Industry Peer Metrics")
 with st.expander("📖 What do these competitor metrics mean?"):
     st.markdown("""
     - **Market Cap:** Total market value of the company's outstanding shares.
-    - **52-Week High / Low:** The highest and lowest prices at which a stock has traded in the past year.
-    - **Year High/Low Ratio:** Indicates how close the current stock price is relative to its 52-week peak.
+    - **52W High / Low:** Highest and lowest prices at which the stock traded over the past year.
+    - **P/E Ratio:** Current price relative to historical earnings. Lower = cheaper; Higher = higher growth expectations.
+    - **Forward P/E:** Price relative to estimated future earnings for the next 12 months.
+    - **PEG Ratio:** P/E adjusted for earnings growth rate. A PEG < 1.0 often indicates good value relative to growth.
+    - **ROE (%):** Return on Equity; efficiency in generating profit from shareholder capital.
+    - **Gross Margin (%):** Percentage of revenue kept after core production costs.
+    - **Debt-to-Equity:** Financial leverage ratio; higher values indicate greater debt load.
     """)
 
 @st.cache_data(ttl=3600)
-def get_fast_peer_metrics(symbols):
+def get_expanded_peer_metrics(symbols):
     metrics_list = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
     for sym in symbols:
         try:
             t = yf.Ticker(sym)
             fast = t.fast_info
             
+            # 1. Existing Fast Info metrics
             last_price = fast.get("lastPrice")
             mcap = fast.get("marketCap")
             year_high = fast.get("yearHigh")
             year_low = fast.get("yearLow")
             
-            mcap_str = f"${round(mcap / 1e9, 2)}B" if mcap else "N/A"
             price_str = f"${round(last_price, 2)}" if last_price else "N/A"
+            mcap_str = f"${round(mcap / 1e9, 2)}B" if mcap else "N/A"
             high_str = f"${round(year_high, 2)}" if year_high else "N/A"
             low_str = f"${round(year_low, 2)}" if year_low else "N/A"
+
+            # 2. Additional Financial Valuation Metrics via direct summary query
+            url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=summaryDetail,financialData,defaultKeyStatistics"
+            pe_ratio, fwd_pe, peg_ratio, roe, gross_margin, debt_to_eq = "N/A", "N/A", "N/A", "N/A", "N/A", "N/A"
+
+            try:
+                res = requests.get(url, headers=headers, timeout=5)
+                if res.status_code == 200:
+                    data = res.json().get('quoteSummary', {}).get('result', [{}])[0]
+                    summary_detail = data.get('summaryDetail', {})
+                    fin_data = data.get('financialData', {})
+                    key_stats = data.get('defaultKeyStatistics', {})
+
+                    def get_raw_or_fmt(d, key, is_pct=False, scale=1):
+                        val = d.get(key, {})
+                        if isinstance(val, dict) and 'raw' in val:
+                            num = val['raw']
+                            if isinstance(num, (int, float)):
+                                return f"{round(num * scale, 2)}%" if is_pct else round(num * scale, 2)
+                        return "N/A"
+
+                    pe_ratio = get_raw_or_fmt(summary_detail, 'trailingPE')
+                    fwd_pe = get_raw_or_fmt(summary_detail, 'forwardPE')
+                    peg_ratio = get_raw_or_fmt(key_stats, 'pegRatio')
+                    roe = get_raw_or_fmt(fin_data, 'returnOnEquity', is_pct=True, scale=100)
+                    gross_margin = get_raw_or_fmt(fin_data, 'grossMargins', is_pct=True, scale=100)
+                    debt_to_eq = get_raw_or_fmt(fin_data, 'debtToEquity')
+            except Exception:
+                pass
 
             metrics_list.append({
                 "Ticker": sym,
                 "Price": price_str,
                 "Market Cap": mcap_str,
                 "52W High": high_str,
-                "52W Low": low_str
+                "52W Low": low_str,
+                "P/E": pe_ratio,
+                "Forward P/E": fwd_pe,
+                "PEG": peg_ratio,
+                "ROE": roe,
+                "Gross Margin": gross_margin,
+                "Debt/Equity": debt_to_eq
             })
         except Exception:
             metrics_list.append({
-                "Ticker": sym, "Price": "N/A", "Market Cap": "N/A", "52W High": "N/A", "52W Low": "N/A"
+                "Ticker": sym, "Price": "N/A", "Market Cap": "N/A", "52W High": "N/A", "52W Low": "N/A",
+                "P/E": "N/A", "Forward P/E": "N/A", "PEG": "N/A", "ROE": "N/A", "Gross Margin": "N/A", "Debt/Equity": "N/A"
             })
+
     return pd.DataFrame(metrics_list).set_index("Ticker")
 
 all_tickers = [ticker_symbol] + peers
-with st.spinner("Fetching peer valuation metrics via fast-info stream..."):
-    comparison_df = get_fast_peer_metrics(all_tickers)
+with st.spinner("Fetching expanded peer metrics..."):
+    comparison_df = get_expanded_peer_metrics(all_tickers)
 
 st.dataframe(comparison_df)
 
@@ -117,7 +162,6 @@ st.header("4. Wall Street Analyst Price Targets & Consensus")
 
 @st.cache_data(ttl=3600)
 def get_analyst_consensus(sym):
-    # Uses public open API endpoint to bypass scraping blocks
     url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=financialData"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
