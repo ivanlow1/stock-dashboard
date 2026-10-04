@@ -68,6 +68,18 @@ import requests
 # --- PANEL 3 & 4: COMPETITOR & INDUSTRY PEER METRICS ---
 st.header("3. Competitor & Industry Peer Metrics")
 
+st.header("3. Competitor & Industry Peer Metrics")
+
+# Add an expandable guide for users
+with st.expander("📖 What do these competitor metrics mean?"):
+    st.markdown("""
+    - **P/E Ratio:** Current price relative to historical earnings. Lower = cheaper; Higher = higher growth expectations.
+    - **Forward P/E:** Price relative to estimated future earnings for the next 12 months.
+    - **PEG Ratio:** P/E adjusted for earnings growth rate. A PEG < 1.0 often indicates good value relative to growth.
+    - **ROE (%):** Efficiency in generating profit from shareholder capital. Higher is generally better.
+    - **Gross Margin (%):** Profit left over after core production costs. Reflects pricing power and efficiency.
+    - **Debt-to-Equity:** Measures financial leverage. High values signal greater debt load and risk.
+    """)
 @st.cache_data(ttl=3600)
 def get_metrics_custom_session(sym):
     try:
