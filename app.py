@@ -63,23 +63,56 @@ if news_items:
 else:
     st.write("No recent news found.")
 
-# --- PANEL 3 & 4: COMPETITOR & INDUSTRY METRICS ---
+import time
+
+# --- PANEL 3 & 4: COMPETITOR & INDUSTRY PEER METRICS ---
 st.header("3. Competitor & Industry Peer Metrics")
 
+@st.cache_data(ttl=3600)  # Cache results for 1 hour to prevent API rate limits
 def get_metrics(sym):
-    info = yf.Ticker(sym).info
-    return {
-        "Ticker": sym,
-        "P/E Ratio": info.get("trailingPE", np.nan),
-        "Forward P/E": info.get("forwardPE", np.nan),
-        "PEG Ratio": info.get("pegRatio", np.nan),
-        "ROE (%)": round(info.get("returnOnEquity", 0) * 100, 2) if info.get("returnOnEquity") else np.nan,
-        "Gross Margin (%)": round(info.get("grossMargins", 0) * 100, 2) if info.get("grossMargins") else np.nan,
-        "Debt-to-Equity": info.get("debtToEquity", np.nan)
-    }
+    try:
+        t = yf.Ticker(sym)
+        info = t.info or {}
+        
+        # Helper function to extract financial values safely
+        def safe_get(key, multiplier=1, round_digits=2):
+            val = info.get(key)
+            if val is not None and isinstance(val, (int, float)):
+                return round(val * multiplier, round_digits)
+            return np.nan
+
+        return {
+            "Ticker": sym,
+            "P/E Ratio": safe_get("trailingPE"),
+            "Forward P/E": safe_get("forwardPE"),
+            "PEG Ratio": safe_get("pegRatio"),
+            "ROE (%)": safe_get("returnOnEquity", multiplier=100),
+            "Gross Margin (%)": safe_get("grossMargins", multiplier=100),
+            "Debt-to-Equity": safe_get("debtToEquity")
+        }
+    except Exception as e:
+        return {
+            "Ticker": sym,
+            "P/E Ratio": np.nan, "Forward P/E": np.nan, "PEG Ratio": np.nan,
+            "ROE (%)": np.nan, "Gross Margin (%)": np.nan, "Debt-to-Equity": np.nan
+        }
 
 all_tickers = [ticker_symbol] + peers
-metrics_list = [get_metrics(s) for s in all_tickers]
+metrics_list = []
+
+with st.spinner("Fetching peer metrics..."):
+    for s in all_tickers:
+        metrics_list.append(get_metrics(s))
+        time.sleep(0.2)  # Short pause to respect rate limits
+
 comparison_df = pd.DataFrame(metrics_list).set_index("Ticker")
 
-st.dataframe(comparison_df.style.highlight_max(axis=0, color="lightgreen").highlight_min(axis=0, color="lightpink"))
+# Check if data exists before rendering
+if not comparison_df.dropna(how="all").empty:
+    st.dataframe(
+        comparison_df.style
+        .highlight_max(axis=0, color="lightgreen")
+        .highlight_min(axis=0, color="lightpink")
+    )
+else:
+    st.warning("Unable to fetch competitor data from Yahoo Finance at this moment. Try refreshing in a few seconds.")
