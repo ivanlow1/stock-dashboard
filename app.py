@@ -3,8 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
-from bs4 import BeautifulSoup
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -73,48 +71,67 @@ with st.expander("📖 What do these competitor metrics mean?"):
     st.markdown("""
     - **Market Cap:** Total market value of the company's outstanding shares.
     - **52W High / Low:** Highest and lowest prices at which the stock traded over the past year.
-    - **P/E Ratio:** Current price relative to historical earnings. Lower = cheaper; Higher = higher growth expectations.
-    - **Forward P/E:** Price relative to estimated future earnings for the next 12 months.
-    - **PEG Ratio:** P/E adjusted for earnings growth rate. A PEG < 1.0 often indicates good value relative to growth.
-    - **ROE (%):** Return on Equity; efficiency in generating profit from shareholder capital.
-    - **Gross Margin (%):** Percentage of revenue kept after core production costs.
-    - **Debt-to-Equity:** Financial leverage ratio; higher values indicate greater debt load.
+    - **Trailing P/E:** Current price divided by trailing 12-month net income per share.
+    - **Gross Margin (%):** Percentage of revenue retained after deducting cost of goods sold.
+    - **ROE (%):** Return on Equity; Net Income divided by total Stockholder Equity.
+    - **Debt-to-Equity:** Ratio of total debt to shareholder equity.
     """)
 
 @st.cache_data(ttl=3600)
-def get_expanded_peer_metrics(symbols):
+def get_peer_metrics(symbols):
     metrics_list = []
 
     for sym in symbols:
         try:
             t = yf.Ticker(sym)
-            
-            # 1. Fast Info Stream Data
             fast = t.fast_info
+            
             last_price = fast.get("lastPrice")
             mcap = fast.get("marketCap")
             year_high = fast.get("yearHigh")
             year_low = fast.get("yearLow")
+            shares = fast.get("shares")
             
             price_str = f"${round(last_price, 2)}" if last_price else "N/A"
             mcap_str = f"${round(mcap / 1e9, 2)}B" if mcap else "N/A"
             high_str = f"${round(year_high, 2)}" if year_high else "N/A"
             low_str = f"${round(year_low, 2)}" if year_low else "N/A"
 
-            # 2. Comprehensive Info Object extraction
-            info = t.info
-            
-            def fmt_val(val, is_pct=False, scale=1):
-                if val is not None and isinstance(val, (int, float)) and not np.isnan(val):
-                    return f"{round(val * scale, 2)}%" if is_pct else str(round(val * scale, 2))
-                return "N/A"
+            pe_str, margin_str, roe_str, de_str = "N/A", "N/A", "N/A", "N/A"
 
-            pe_ratio = fmt_val(info.get("trailingPE"))
-            fwd_pe = fmt_val(info.get("forwardPE"))
-            peg_ratio = fmt_val(info.get("pegRatio"))
-            roe = fmt_val(info.get("returnOnEquity"), is_pct=True, scale=100)
-            gross_margin = fmt_val(info.get("grossMargins"), is_pct=True, scale=100)
-            debt_to_eq = fmt_val(info.get("debtToEquity"))
+            # Derive key stats directly from financial statements
+            try:
+                income = t.financials
+                balance = t.balance_sheet
+
+                if not income.empty and not balance.empty:
+                    # Trailing Net Income & Gross Margin
+                    net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
+                    revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
+                    gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
+
+                    # Stockholder Equity & Total Debt
+                    equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
+                    total_debt = balance.loc['Total Debt'].dropna().iloc[0] if 'Total Debt' in balance.index else None
+
+                    # Trailing P/E
+                    if net_income and shares and net_income > 0:
+                        eps = net_income / shares
+                        pe_str = str(round(last_price / eps, 2))
+
+                    # Gross Margin
+                    if gross_profit and revenue:
+                        margin_str = f"{round((gross_profit / revenue) * 100, 2)}%"
+
+                    # ROE
+                    if net_income and equity:
+                        roe_str = f"{round((net_income / equity) * 100, 2)}%"
+
+                    # Debt to Equity
+                    if total_debt is not None and equity:
+                        de_str = str(round(total_debt / equity, 2))
+            except Exception:
+                pass
 
             metrics_list.append({
                 "Ticker": sym,
@@ -122,24 +139,22 @@ def get_expanded_peer_metrics(symbols):
                 "Market Cap": mcap_str,
                 "52W High": high_str,
                 "52W Low": low_str,
-                "P/E": pe_ratio,
-                "Forward P/E": fwd_pe,
-                "PEG": peg_ratio,
-                "ROE": roe,
-                "Gross Margin": gross_margin,
-                "Debt/Equity": debt_to_eq
+                "P/E": pe_str,
+                "Gross Margin": margin_str,
+                "ROE": roe_str,
+                "Debt/Equity": de_str
             })
         except Exception:
             metrics_list.append({
                 "Ticker": sym, "Price": "N/A", "Market Cap": "N/A", "52W High": "N/A", "52W Low": "N/A",
-                "P/E": "N/A", "Forward P/E": "N/A", "PEG": "N/A", "ROE": "N/A", "Gross Margin": "N/A", "Debt/Equity": "N/A"
+                "P/E": "N/A", "Gross Margin": "N/A", "ROE": "N/A", "Debt/Equity": "N/A"
             })
 
     return pd.DataFrame(metrics_list).set_index("Ticker")
 
 all_tickers = [ticker_symbol] + peers
-with st.spinner("Fetching expanded peer metrics..."):
-    comparison_df = get_expanded_peer_metrics(all_tickers)
+with st.spinner("Fetching live peer metrics..."):
+    comparison_df = get_peer_metrics(all_tickers)
 
 st.dataframe(comparison_df)
 
@@ -150,24 +165,26 @@ st.header("4. Wall Street Analyst Price Targets & Consensus")
 def get_analyst_consensus(sym):
     try:
         t = yf.Ticker(sym)
-        info = t.info
-        current = info.get("currentPrice") or info.get("regularMarketPrice") or t.fast_info.get("lastPrice")
-        target = info.get("targetMeanPrice")
-        low = info.get("targetLowPrice")
-        high = info.get("targetHighPrice")
-        return current, target, low, high
+        hist = t.history(period="1d")
+        current = hist["Close"].iloc[-1] if not hist.empty else t.fast_info.get("lastPrice")
+        
+        # Try fetching target from recommendations if available
+        rec = t.recommendations
+        if rec is not None and not rec.empty:
+            target = rec.get("targetMeanPrice", [None])[0] if "targetMeanPrice" in rec.columns else None
+            return current, target
+        return current, None
     except Exception:
-        return None, None, None, None
+        return None, None
 
-current_price, mean_target, low_target, high_target = get_analyst_consensus(ticker_symbol)
+current_price, mean_target = get_analyst_consensus(ticker_symbol)
 
 if mean_target and current_price:
     upside = round(((mean_target - current_price) / current_price) * 100, 2)
     upside_str = f"{'+' if upside > 0 else ''}{upside}%"
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.metric("Current Price", f"${round(current_price, 2)}")
     c2.metric("Mean Price Target", f"${round(mean_target, 2)}", upside_str)
-    c3.metric("Target Range", f"${round(low_target, 2)} - ${round(high_target, 2)}" if low_target and high_target else "N/A")
 else:
-    st.warning("Analyst price target data is currently unavailable.")
+    st.info("Analyst price target data is limited on this stream for the selected ticker.")
