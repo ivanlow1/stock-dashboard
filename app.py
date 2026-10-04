@@ -7,18 +7,79 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+# Page setup
 st.set_page_config(
     page_title="Company Dashboard & Profile",
     page_icon="📈",
     layout="wide",
 )
 
+# Standard browser headers to avoid HTTP 403 / 429 blocks
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    )
+}
+
+
+def extract_year_from_text(text):
+  """Extracts founding/incorporation year using broad regex patterns."""
+  if not text:
+    return None
+
+  # Pattern 1: Verbal descriptions (e.g., "founded in 2000", "incorporated in October 1998", "established 1984")
+  pattern_verbal = r"\b(?:founded|incorporated|established|started|formed)\b.*?\b(18\d\d|19\d\d|20\d\d)\b"
+  match = re.search(pattern_verbal, text, re.IGNORECASE)
+  if match:
+    return int(match.group(1))
+
+  # Pattern 2: Key-value structures (e.g., "Founded: 2000", "Incorporated: 1998")
+  pattern_keyval = (
+      r"\b(?:Founded|Incorporated|Established)\b\s*:\s*\b(18\d\d|19\d\d|20\d\d)\b"
+  )
+  match = re.search(pattern_keyval, text, re.IGNORECASE)
+  if match:
+    return int(match.group(1))
+
+  return None
+
+
+def get_founding_year_scraped(ticker_symbol):
+  """Scrapes founding year from StockAnalysis or Yahoo Profile HTML."""
+  # Attempt A: StockAnalysis
+  try:
+    url = f"https://stockanalysis.com/stocks/{ticker_symbol.lower()}/company/"
+    resp = requests.get(url, headers=HEADERS, timeout=4)
+    if resp.status_code == 200:
+      soup = bs4.BeautifulSoup(resp.text, "html.parser")
+      for element in soup.find_all(["td", "div", "span", "tr"]):
+        if "Founded" in element.text:
+          year = extract_year_from_text(element.text)
+          if year:
+            return year
+  except Exception:
+    pass
+
+  # Attempt B: Yahoo Finance Profile Page
+  try:
+    url = f"https://finance.yahoo.com/quote/{ticker_symbol}/profile"
+    resp = requests.get(url, headers=HEADERS, timeout=4)
+    if resp.status_code == 200:
+      year = extract_year_from_text(resp.text)
+      if year:
+        return year
+  except Exception:
+    pass
+
+  return None
+
 
 def get_founding_year_wikidata(company_name):
-  """Queries Wikidata SPARQL API for the inception year of a company."""
+  """Queries Wikidata SPARQL API for company inception year (P571)."""
   try:
     search_url = f"https://www.wikidata.org/w/api.php?action=wbsearchentities&search={urllib.parse.quote(company_name)}&language=en&format=json"
-    res = requests.get(search_url, timeout=3).json()
+    res = requests.get(search_url, headers=HEADERS, timeout=3).json()
     if not res.get("search"):
       return None
 
@@ -33,7 +94,7 @@ def get_founding_year_wikidata(company_name):
     sparql_res = requests.get(
         wikidata_url,
         params={"query": sparql_query, "format": "json"},
-        headers={"User-Agent": "StreamlitCompanyApp/1.0"},
+        headers=HEADERS,
         timeout=3,
     ).json()
 
@@ -49,84 +110,41 @@ def get_founding_year_wikidata(company_name):
   return None
 
 
-def get_founding_year_scraped(ticker_symbol):
-  """Fallback scraper checking StockAnalysis and Yahoo Profile for founded year."""
-  headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      )
-  }
-
-  # Strategy A: StockAnalysis
-  try:
-    url = f"https://stockanalysis.com/stocks/{ticker_symbol.lower()}/company/"
-    resp = requests.get(url, headers=headers, timeout=4)
-    if resp.status_code == 200:
-      soup = bs4.BeautifulSoup(resp.text, "html.parser")
-      for td in soup.find_all(["td", "div", "span"]):
-        if "Founded" in td.text:
-          match = re.search(r"\b(18\d\d|19\d\d|20\d\d)\b", td.parent.text)
-          if match:
-            return int(match.group(1))
-  except Exception:
-    pass
-
-  # Strategy B: Yahoo Finance HTML
-  try:
-    url = f"https://finance.yahoo.com/quote/{ticker_symbol}/profile"
-    resp = requests.get(url, headers=headers, timeout=4)
-    if resp.status_code == 200:
-      match = re.search(
-          r"founded\s+(?:in\s+)?(18\d\d|19\d\d|20\d\d)", resp.text, re.IGNORECASE
-      )
-      if match:
-        return int(match.group(1))
-  except Exception:
-    pass
-
-  return None
-
-
 @st.cache_data(ttl=86400)
 def get_company_profile(sym):
-  """Fetches profile details and computes company age cleanly across fallback sources."""
+  """Fetches profile details and computes company age via multi-tiered strategy."""
   try:
     t = yf.Ticker(sym)
-    info = t.info
+    info = t.info or {}
+
     current_year = datetime.now().year
     company_name = info.get("longName") or info.get("shortName") or sym
 
     founded_year = None
     age_label = ""
 
-    # 1. Regex parse "founded in YYYY" directly from Yahoo business summary
+    # Strategy 1: Check Yahoo longBusinessSummary for "founded/incorporated in YYYY"
     summary = info.get("longBusinessSummary", "")
-    if summary:
-      match = re.search(
-          r"\bfounded\s+(?:in\s+)?(18\d\d|19\d\d|20\d\d)\b",
-          summary,
-          re.IGNORECASE,
-      )
-      if match:
-        founded_year = int(match.group(1))
-        age_label = "Founded"
+    parsed_year = extract_year_from_text(summary)
+    if parsed_year:
+      founded_year = parsed_year
+      age_label = "Founded"
 
-    # 2. Query Wikidata / Wikipedia
-    if not founded_year:
-      wiki_year = get_founding_year_wikidata(company_name)
-      if wiki_year:
-        founded_year = wiki_year
-        age_label = "Founded via Wikipedia"
-
-    # 3. Web Scrape Fallback (StockAnalysis & Yahoo Profile)
+    # Strategy 2: StockAnalysis & Yahoo Profile Scraping
     if not founded_year:
       scraped_year = get_founding_year_scraped(sym)
       if scraped_year:
         founded_year = scraped_year
         age_label = "Founded"
 
-    # 4. Compile Result or Fallback to IPO / Historical Trading Data
+    # Strategy 3: Wikidata Query
+    if not founded_year:
+      wiki_year = get_founding_year_wikidata(company_name)
+      if wiki_year:
+        founded_year = wiki_year
+        age_label = "Founded via Wikidata"
+
+    # Strategy 4: Fallback to IPO date or First Available Trading Year
     if founded_year:
       calculated_age = (
           f"{current_year - founded_year} years ({age_label} ~{founded_year})"
@@ -139,7 +157,7 @@ def get_company_profile(sym):
           f"Public for {current_year - ipo_year} years (IPO ~{ipo_year})"
       )
     else:
-      # Get earliest price record date
+      # Price history fallback
       hist = t.history(period="max")
       if not hist.empty:
         first_year = hist.index[0].year
@@ -153,11 +171,11 @@ def get_company_profile(sym):
     info["calculated_age"] = calculated_age
     return info
   except Exception as e:
-    st.error(f"Error fetching profile: {e}")
+    st.error(f"Error retrieving company profile: {e}")
     return {}
 
 
-# Streamlit UI
+# --- Streamlit Dashboard UI ---
 st.title("📊 Company Financial & Profile Dashboard")
 
 ticker = (
@@ -167,7 +185,7 @@ ticker = (
 )
 
 if ticker:
-  with st.spinner(f"Loading data for {ticker}..."):
+  with st.spinner(f"Loading profile for {ticker}..."):
     profile = get_company_profile(ticker)
 
   if profile:
@@ -175,21 +193,21 @@ if ticker:
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-      st.metric(
-          label="Current Price",
-          value=f"${profile.get('currentPrice', profile.get('regularMarketPrice', 'N/A'))}",
-      )
-    with col2:
-      st.metric(
-          label="Market Cap",
-          value=(
-              f"${profile.get('marketCap', 0):,}"
-              if profile.get("marketCap")
-              else "N/A"
+      price = profile.get(
+          "currentPrice",
+          profile.get(
+              "regularMarketPrice", profile.get("previousClose", "N/A")
           ),
       )
+      st.metric(label="Current Price", value=f"${price}")
+    with col2:
+      mcap = profile.get("marketCap")
+      st.metric(label="Market Cap", value=f"${mcap:,}" if mcap else "N/A")
     with col3:
-      st.metric(label="Company Age / Status", value=profile.get("calculated_age", "N/A"))
+      st.metric(
+          label="Company Age / Status",
+          value=profile.get("calculated_age", "N/A"),
+      )
     with col4:
       st.metric(label="Sector", value=profile.get("sector", "N/A"))
 
