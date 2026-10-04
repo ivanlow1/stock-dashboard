@@ -1,9 +1,10 @@
 import streamlit as st
 import yfinance as yf
-from yahooquery import Ticker as YQTicker
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import requests
+from bs4 import BeautifulSoup
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -13,7 +14,7 @@ st.title("📈 Interactive Stock Ticker Dashboard")
 # --- SIDEBAR INPUTS ---
 ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="FTNT").upper()
 peer_symbols = st.sidebar.text_input("Enter Peers (comma-separated):", value="MSFT, GOOGL, NVDA")
-peers = [p.strip().upper() for p in peer_symbols.split(",")]
+peers = [p.strip().upper() for p in peer_symbols.split(",") if p.strip()]
 
 ticker = yf.Ticker(ticker_symbol)
 
@@ -79,46 +80,46 @@ with st.expander("📖 What do these competitor metrics mean?"):
     """)
 
 @st.cache_data(ttl=3600)
-def get_peer_metrics_yq(symbols):
+def get_finviz_metrics(symbols):
     metrics_list = []
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    }
     
     for sym in symbols:
+        url = f"https://finviz.com/quote.ashx?t={sym.upper()}"
         try:
-            yq = YQTicker(sym)
-            summary = yq.summary_detail
-            fin = yq.financial_data
-            stats = yq.key_stats
-            
-            # Safe dict extraction in case yahooquery returns an error string or dict
-            s_data = summary.get(sym, {}) if isinstance(summary, dict) and isinstance(summary.get(sym), dict) else {}
-            f_data = fin.get(sym, {}) if isinstance(fin, dict) and isinstance(fin.get(sym), dict) else {}
-            k_data = stats.get(sym, {}) if isinstance(stats, dict) and isinstance(stats.get(sym), dict) else {}
-            
-            def fmt_val(val, scale=1):
-                if isinstance(val, (int, float)) and not np.isnan(val):
-                    return round(val * scale, 2)
-                return "N/A"
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                
+                # Extract key-value cells from Finviz snapshot table
+                table_bytes = soup.find_all("td", class_="snapshot-td2")
+                table_keys = soup.find_all("td", class_="snapshot-td2-cp")
+                
+                data_dict = {}
+                for key_elem, val_elem in zip(table_keys, table_bytes):
+                    data_dict[key_elem.text.strip()] = val_elem.text.strip()
 
-            metrics_list.append({
-                "Ticker": sym,
-                "P/E Ratio": fmt_val(s_data.get("trailingPE")),
-                "Forward P/E": fmt_val(s_data.get("forwardPE")),
-                "PEG Ratio": fmt_val(k_data.get("pegRatio")),
-                "ROE (%)": fmt_val(f_data.get("returnOnEquity"), scale=100),
-                "Gross Margin (%)": fmt_val(f_data.get("grossMargins"), scale=100),
-                "Debt-to-Equity": fmt_val(f_data.get("debtToEquity"))
-            })
+                metrics_list.append({
+                    "Ticker": sym,
+                    "P/E Ratio": data_dict.get("P/E", "N/A"),
+                    "Forward P/E": data_dict.get("Forward P/E", "N/A"),
+                    "PEG Ratio": data_dict.get("PEG", "N/A"),
+                    "ROE (%)": data_dict.get("ROE", "N/A"),
+                    "Gross Margin (%)": data_dict.get("Gross Margin", "N/A"),
+                    "Debt-to-Equity": data_dict.get("Debt/Eq", "N/A")
+                })
+            else:
+                metrics_list.append({"Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"})
         except Exception:
-            metrics_list.append({
-                "Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", 
-                "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"
-            })
+            metrics_list.append({"Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"})
             
     return pd.DataFrame(metrics_list).set_index("Ticker")
 
 all_tickers = [ticker_symbol] + peers
-with st.spinner("Fetching live peer metrics via YahooQuery..."):
-    comparison_df = get_peer_metrics_yq(all_tickers)
+with st.spinner("Fetching live peer metrics from Finviz..."):
+    comparison_df = get_finviz_metrics(all_tickers)
 
 st.dataframe(comparison_df)
 
@@ -126,43 +127,41 @@ st.dataframe(comparison_df)
 st.header("4. Wall Street Analyst Price Targets & Consensus")
 
 @st.cache_data(ttl=3600)
-def get_analysts_yq(sym):
+def get_finviz_analyst_targets(sym):
+    url = f"https://finviz.com/quote.ashx?t={sym.upper()}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    }
     try:
-        yq = YQTicker(sym)
-        price_dict = yq.price
-        fin_dict = yq.financial_data
-        
-        price_data = price_dict.get(sym, {}) if isinstance(price_dict, dict) and isinstance(price_dict.get(sym), dict) else {}
-        target_data = fin_dict.get(sym, {}) if isinstance(fin_dict, dict) and isinstance(fin_dict.get(sym), dict) else {}
-        
-        current = price_data.get("regularMarketPrice")
-        mean_target = target_data.get("targetMeanPrice")
-        low_target = target_data.get("targetLowPrice")
-        high_target = target_data.get("targetHighPrice")
-        
-        return current, mean_target, low_target, high_target
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            table_bytes = soup.find_all("td", class_="snapshot-td2")
+            table_keys = soup.find_all("td", class_="snapshot-td2-cp")
+            
+            data_dict = {}
+            for key_elem, val_elem in zip(table_keys, table_bytes):
+                data_dict[key_elem.text.strip()] = val_elem.text.strip()
+                
+            price_str = data_dict.get("Price", "N/A")
+            target_str = data_dict.get("Target Price", "N/A")
+            
+            curr_price = float(price_str) if price_str != "N/A" else None
+            mean_target = float(target_str) if target_str != "N/A" else None
+            
+            return curr_price, mean_target
     except Exception:
-        return None, None, None, None
+        pass
+    return None, None
 
-with st.spinner("Fetching analyst price targets..."):
-    current, mean_target, low_target, high_target = get_analysts_yq(ticker_symbol)
+curr_price, mean_target = get_finviz_analyst_targets(ticker_symbol)
 
-if mean_target and current and isinstance(mean_target, (int, float)) and isinstance(current, (int, float)):
-    upside = round(((mean_target - current) / current) * 100, 2)
+if mean_target and curr_price:
+    upside = round(((mean_target - curr_price) / curr_price) * 100, 2)
     upside_str = f"{'+' if upside > 0 else ''}{upside}%"
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Current Price", f"${round(current, 2)}")
-    c2.metric("Mean Price Target", f"${round(mean_target, 2)}", upside_str)
-    c3.metric("Target Range", f"${round(low_target, 2)} - ${round(high_target, 2)}")
-
-    if low_target and high_target and current:
-        st.subheader("Price Target Spread")
-        st.write(f"**Low:** ${round(low_target, 2)} | **Current:** ${round(current, 2)} | **Mean Target:** ${round(mean_target, 2)} | **High:** ${round(high_target, 2)}")
-        spread = high_target - low_target
-        if spread > 0:
-            pos = min(max((current - low_target) / spread, 0.0), 1.0)
-            st.progress(pos, text=f"Current Price Position in Analyst Range: {round(pos * 100, 1)}%")
+    c1, c2 = st.columns(2)
+    c1.metric("Current Price", f"${curr_price}")
+    c2.metric("Mean Price Target", f"${mean_target}", upside_str)
 else:
-    st.warning("Analyst price target data is currently unavailable for this ticker.")
-
+    st.warning("Analyst price target data is currently unavailable.")
