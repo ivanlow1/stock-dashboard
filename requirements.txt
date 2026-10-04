@@ -1,8 +1,8 @@
 streamlit
-yfinance>=0.2.40
+yfinance
+yahooquery
 pandas
 numpy
 plotly
 ta
 vaderSentiment
-requests
