@@ -316,45 +316,41 @@ def style_relative_to_ref(df):
 styled_df = df_raw.style.apply(style_relative_to_ref, axis=None)\
     .format("{:.2f}", na_rep="N/A")
 
-html_table = f"""
-<style>
-    .custom-table-container {{
-        width: 100%;
-        overflow-x: auto;
-        margin-bottom: 20px;
-    }}
-    .custom-table {{
-        width: 100%;
-        border-collapse: collapse;
-        color: #ffffff;
-        font-family: inherit;
-        background-color: #0e1117;
-    }}
-    .custom-table th {{
-        background-color: #1a1c23;
-        padding: 10px;
-        text-align: right;
-        border: 1px solid #30363d;
-    }}
-    .custom-table th:first-child {{
-        text-align: left;
-    }}
-    .custom-table td {{
-        padding: 10px;
-        text-align: right;
-        border: 1px solid #30363d;
-    }}
-    .custom-table td:first-child {{
-        text-align: left;
-        font-weight: bold;
-    }}
-</style>
-<div class="custom-table-container">
-    {styled_df.to_html(classes='custom-table')}
-</div>
-"""
+st.markdown(
+    """
+    <style>
+        .custom-table {
+            width: 100%;
+            border-collapse: collapse;
+            color: #ffffff;
+            font-family: inherit;
+            background-color: #0e1117;
+            margin-bottom: 20px;
+        }
+        .custom-table th {
+            background-color: #1a1c23;
+            padding: 10px;
+            text-align: right;
+            border: 1px solid #30363d;
+        }
+        .custom-table th:first-child {
+            text-align: left;
+        }
+        .custom-table td {
+            padding: 10px;
+            text-align: right;
+            border: 1px solid #30363d;
+        }
+        .custom-table td:first-child {
+            text-align: left;
+            font-weight: bold;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-st.write(html_table, unsafe_allow_html=True)
+st.write(styled_df.to_html(classes='custom-table'), unsafe_allow_html=True)
 
 # --- PANEL 4: PROFESSIONAL STOCK ANALYST RECOMMENDATION & ANALYSIS ---
 st.header("4. Professional Stock Analyst Recommendation")
@@ -447,7 +443,6 @@ q_fin = get_quarterly_financials(ticker_symbol)
 if not q_fin.empty and q_fin.shape[1] >= 1:
     cols = list(q_fin.columns)
     
-    # Map metrics of interest
     metric_keys = {
         "Total Revenue": "Revenue ($M)",
         "Gross Profit": "Gross Profit ($M)",
@@ -502,13 +497,7 @@ if not q_fin.empty and q_fin.shape[1] >= 1:
         .format("{:+.2f}%", subset=[c for c in df_perf.columns if "Growth" in c], na_rep="N/A")\
         .format("{:,.2f}", subset=[c for c in df_perf.columns if "Growth" not in c], na_rep="N/A")
 
-    perf_html = f"""
-    <div class="custom-table-container">
-        {styled_perf.to_html(classes='custom-table')}
-    </div>
-    """
-
-    st.write(perf_html, unsafe_allow_html=True)
+    st.write(styled_perf.to_html(classes='custom-table'), unsafe_allow_html=True)
 
 else:
     st.warning("Quarterly financial report data is currently unavailable for this ticker.")
