@@ -1,39 +1,21 @@
 import streamlit as st
 import yfinance as yf
+from yahooquery import Ticker as YQTicker
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("📈 Interactive Stock Ticker Dashboard")
 
-# --- CREATE A CUSTOM SESSION TO BYPASS YAHOO'S CLOUD BLOCK ---
-@st.cache_resource
-def get_yf_session():
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-    })
-    try:
-        # Pre-fetch main page to acquire necessary cookies/crumb
-        session.get("https://fc.yahoo.com", timeout=5)
-    except Exception:
-        pass
-    return session
-
-session = get_yf_session()
-
 # --- SIDEBAR INPUTS ---
 ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="FTNT").upper()
 peer_symbols = st.sidebar.text_input("Enter Peers (comma-separated):", value="MSFT, GOOGL, NVDA")
 peers = [p.strip().upper() for p in peer_symbols.split(",")]
 
-ticker = yf.Ticker(ticker_symbol, session=session)
+ticker = yf.Ticker(ticker_symbol)
 
 # --- PANEL 1: INDICATIVE FUTURE TRADING BANDS ---
 st.header(f"1. Price & Trading Bands ({ticker_symbol})")
@@ -97,78 +79,74 @@ with st.expander("📖 What do these competitor metrics mean?"):
     """)
 
 @st.cache_data(ttl=3600)
-def get_peer_metrics(symbols):
+def get_peer_metrics_yq(symbols):
+    yq = YQTicker(symbols)
+    summary = yq.summary_detail
+    fin = yq.financial_data
+    stats = yq.key_stats
+    
     metrics_list = []
     for sym in symbols:
-        try:
-            t = yf.Ticker(sym, session=session)
-            info = t.info
-            
-            # Helper function to format percentages safely
-            def fmt_pct(val):
-                return round(val * 100, 2) if isinstance(val, (int, float)) else "N/A"
-            
-            # Helper function to format numeric float ratios safely
-            def fmt_num(val):
-                return round(val, 2) if isinstance(val, (int, float)) else "N/A"
+        s_data = summary.get(sym, {}) if isinstance(summary, dict) else {}
+        f_data = fin.get(sym, {}) if isinstance(fin, dict) else {}
+        k_data = stats.get(sym, {}) if isinstance(stats, dict) else {}
+        
+        def fmt_val(val, scale=1):
+            if isinstance(val, (int, float)) and not np.isnan(val):
+                return round(val * scale, 2)
+            return "N/A"
 
-            metrics_list.append({
-                "Ticker": sym,
-                "P/E Ratio": fmt_num(info.get("trailingPE")),
-                "Forward P/E": fmt_num(info.get("forwardPE")),
-                "PEG Ratio": fmt_num(info.get("pegRatio")),
-                "ROE (%)": fmt_pct(info.get("returnOnEquity")),
-                "Gross Margin (%)": fmt_pct(info.get("grossMargins")),
-                "Debt-to-Equity": fmt_num(info.get("debtToEquity"))
-            })
-        except Exception:
-            metrics_list.append({
-                "Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", 
-                "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"
-            })
+        metrics_list.append({
+            "Ticker": sym,
+            "P/E Ratio": fmt_val(s_data.get("trailingPE")),
+            "Forward P/E": fmt_val(s_data.get("forwardPE")),
+            "PEG Ratio": fmt_val(k_data.get("pegRatio")),
+            "ROE (%)": fmt_val(f_data.get("returnOnEquity"), scale=100),
+            "Gross Margin (%)": fmt_val(f_data.get("grossMargins"), scale=100),
+            "Debt-to-Equity": fmt_val(f_data.get("debtToEquity"))
+        })
     return pd.DataFrame(metrics_list).set_index("Ticker")
 
 all_tickers = [ticker_symbol] + peers
-with st.spinner("Fetching peer metrics..."):
-    comparison_df = get_peer_metrics(all_tickers)
+with st.spinner("Fetching live peer metrics via YahooQuery..."):
+    comparison_df = get_peer_metrics_yq(all_tickers)
 
 st.dataframe(comparison_df)
 
 # --- PANEL 4: WALL STREET ANALYST TARGETS & RATINGS ---
 st.header("4. Wall Street Analyst Price Targets & Consensus")
 
-analyst_data = None
-current_price = None
+@st.cache_data(ttl=3600)
+def get_analysts_yq(sym):
+    yq = YQTicker(sym)
+    price_data = yq.price.get(sym, {}) if isinstance(yq.price, dict) else {}
+    target_data = yq.financial_data.get(sym, {}) if isinstance(yq.financial_data, dict) else {}
+    
+    current = price_data.get("regularMarketPrice")
+    mean_target = target_data.get("targetMeanPrice")
+    low_target = target_data.get("targetLowPrice")
+    high_target = target_data.get("targetHighPrice")
+    
+    return current, mean_target, low_target, high_target
 
-try:
-    # Pull targets dict directly via custom session
-    analyst_data = ticker.analyst_price_targets
-    info_data = ticker.info
-    current_price = info_data.get('currentPrice') or info_data.get('regularMarketPrice')
-except Exception:
-    pass
+with st.spinner("Fetching analyst price targets..."):
+    current, mean_target, low_target, high_target = get_analysts_yq(ticker_symbol)
 
-# Verify targets dict has actual data
-if isinstance(analyst_data, dict) and analyst_data.get("mean") is not None:
-    mean_target = analyst_data.get("mean")
-    low_target = analyst_data.get("low")
-    high_target = analyst_data.get("high")
-    current = analyst_data.get("current") or current_price
-
-    upside = round(((mean_target - current) / current) * 100, 2) if current and mean_target else "N/A"
-    upside_str = f"{'+' if isinstance(upside, float) and upside > 0 else ''}{upside}%"
+if mean_target and current and not isinstance(mean_target, str):
+    upside = round(((mean_target - current) / current) * 100, 2)
+    upside_str = f"{'+' if upside > 0 else ''}{upside}%"
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Current Price", f"${current}" if current else "N/A")
-    c2.metric("Mean Price Target", f"${mean_target}" if mean_target else "N/A", upside_str)
-    c3.metric("Target Range", f"${low_target} - ${high_target}" if low_target and high_target else "N/A")
+    c1.metric("Current Price", f"${round(current, 2)}")
+    c2.metric("Mean Price Target", f"${round(mean_target, 2)}", upside_str)
+    c3.metric("Target Range", f"${round(low_target, 2)} - ${round(high_target, 2)}")
 
     if low_target and high_target and current:
         st.subheader("Price Target Spread")
-        st.write(f"**Low:** ${low_target} | **Current:** ${current} | **Mean Target:** ${mean_target} | **High:** ${high_target}")
+        st.write(f"**Low:** ${round(low_target, 2)} | **Current:** ${round(current, 2)} | **Mean Target:** ${round(mean_target, 2)} | **High:** ${round(high_target, 2)}")
         spread = high_target - low_target
         if spread > 0:
             pos = min(max((current - low_target) / spread, 0.0), 1.0)
             st.progress(pos, text=f"Current Price Position in Analyst Range: {round(pos * 100, 1)}%")
 else:
-    st.warning("Analyst price target data is currently unavailable for this ticker on Yahoo Finance.")
+    st.warning("Analyst price target data is currently unavailable for this ticker.")
