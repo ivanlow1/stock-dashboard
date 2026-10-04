@@ -3,6 +3,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import urllib.request
+import xml.etree.ElementTree as ET
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -43,26 +45,84 @@ else:
 st.header("2. Key News & Sentiment")
 
 analyzer = SentimentIntensityAnalyzer()
-try:
-    news_items = ticker.news
-except Exception:
-    news_items = []
+
+@st.cache_data(ttl=1800)
+def fetch_multi_source_news(sym):
+    articles = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
+    # 1. Google News RSS
+    try:
+        gn_url = f"https://news.google.com/rss/search?q={sym}+stock&hl=en-US&gl=US&ceid=US:en"
+        req = urllib.request.Request(gn_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as res:
+            root = ET.fromstring(res.read())
+            for item in root.findall('./channel/item')[:4]:
+                title = item.find('title').text if item.find('title') is not None else ""
+                link = item.find('link').text if item.find('link') is not None else "#"
+                if title:
+                    articles.append({'title': title, 'link': link, 'source': 'Google News'})
+    except Exception:
+        pass
+
+    # 2. Yahoo Finance RSS
+    try:
+        yf_url = f"https://finance.yahoo.com/rss/headline?s={sym}"
+        req = urllib.request.Request(yf_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as res:
+            root = ET.fromstring(res.read())
+            for item in root.findall('./channel/item')[:4]:
+                title = item.find('title').text if item.find('title') is not None else ""
+                link = item.find('link').text if item.find('link') is not None else "#"
+                if title:
+                    articles.append({'title': title, 'link': link, 'source': 'Yahoo Finance'})
+    except Exception:
+        pass
+
+    # 3. CNBC Search RSS
+    try:
+        cnbc_url = f"https://www.cnbc.com/id/100003114/device/rss/rss.html"
+        req = urllib.request.Request(cnbc_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as res:
+            root = ET.fromstring(res.read())
+            count = 0
+            for item in root.findall('./channel/item'):
+                title = item.find('title').text if item.find('title') is not None else ""
+                link = item.find('link').text if item.find('link') is not None else "#"
+                # Filter for stock keyword context
+                if title and sym.lower() in title.lower():
+                    articles.append({'title': title, 'link': link, 'source': 'CNBC'})
+                    count += 1
+                    if count >= 3:
+                        break
+    except Exception:
+        pass
+
+    return articles
+
+news_items = fetch_multi_source_news(ticker_symbol)
 
 if news_items:
     news_data = []
-    for item in news_items[:5]:
-        content = item.get('content', {}) if isinstance(item.get('content'), dict) else {}
-        title = item.get('title') or content.get('title') or 'No Title Available'
-        link = item.get('link') or content.get('canonicalUrl', {}).get('url') or '#'
+    for item in news_items:
+        title = item['title']
+        link = item['link']
+        source = item['source']
         
         score = analyzer.polarity_scores(title)['compound']
         sentiment = "🟢 Bullish" if score > 0.05 else ("🔴 Bearish" if score < -0.05 else "🟡 Neutral")
         
-        news_data.append({"Title": f"[{title}]({link})", "Sentiment": sentiment, "Score": score})
+        news_data.append({
+            "Source": source,
+            "Headline": f"<a href='{link}' target='_blank'>{title}</a>",
+            "Sentiment": sentiment,
+            "Score": round(score, 2)
+        })
 
-    st.write(pd.DataFrame(news_data).to_html(escape=False), unsafe_allow_html=True)
+    news_df = pd.DataFrame(news_data)
+    st.write(news_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.write("No recent news found.")
+    st.write("No recent news found across Google News, Yahoo Finance, or CNBC.")
 
 # --- PANEL 3: COMPETITOR & INDUSTRY PEER METRICS ---
 st.header("3. Competitor & Industry Peer Metrics")
@@ -99,35 +159,28 @@ def get_peer_metrics(symbols):
 
             pe_str, margin_str, roe_str, de_str = "N/A", "N/A", "N/A", "N/A"
 
-            # Derive key stats directly from financial statements
             try:
                 income = t.financials
                 balance = t.balance_sheet
 
                 if not income.empty and not balance.empty:
-                    # Trailing Net Income & Gross Margin
                     net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
                     revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
                     gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
 
-                    # Stockholder Equity & Total Debt
                     equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
                     total_debt = balance.loc['Total Debt'].dropna().iloc[0] if 'Total Debt' in balance.index else None
 
-                    # Trailing P/E
                     if net_income and shares and net_income > 0:
                         eps = net_income / shares
                         pe_str = str(round(last_price / eps, 2))
 
-                    # Gross Margin
                     if gross_profit and revenue:
                         margin_str = f"{round((gross_profit / revenue) * 100, 2)}%"
 
-                    # ROE
                     if net_income and equity:
                         roe_str = f"{round((net_income / equity) * 100, 2)}%"
 
-                    # Debt to Equity
                     if total_debt is not None and equity:
                         de_str = str(round(total_debt / equity, 2))
             except Exception:
@@ -168,7 +221,6 @@ def get_analyst_consensus(sym):
         hist = t.history(period="1d")
         current = hist["Close"].iloc[-1] if not hist.empty else t.fast_info.get("lastPrice")
         
-        # Try fetching target from recommendations if available
         rec = t.recommendations
         if rec is not None and not rec.empty:
             target = rec.get("targetMeanPrice", [None])[0] if "targetMeanPrice" in rec.columns else None
