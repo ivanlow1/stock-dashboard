@@ -3,22 +3,23 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from curl_cffi import requests
+import requests
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("📈 Interactive Stock Ticker Dashboard")
 
-# Session with curl_cffi impersonation to bypass Yahoo's 401 Unauthorized block
-session = requests.Session(impersonate="chrome")
+# --- FINNHUB API KEY ---
+# Replace with your free key from https://finnhub.io/
+FINNHUB_API_KEY = "YOUR_FINNHUB_API_KEY_HERE"
 
 # --- SIDEBAR INPUTS ---
-ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="AAPL").upper()
+ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="FTNT").upper()
 peer_symbols = st.sidebar.text_input("Enter Peers (comma-separated):", value="MSFT, GOOGL, NVDA")
 peers = [p.strip().upper() for p in peer_symbols.split(",")]
 
-ticker = yf.Ticker(ticker_symbol, session=session)
+ticker = yf.Ticker(ticker_symbol)
 
 # --- PANEL 1: INDICATIVE FUTURE TRADING BANDS ---
 st.header(f"1. Price & Trading Bands ({ticker_symbol})")
@@ -82,35 +83,29 @@ with st.expander("📖 What do these competitor metrics mean?"):
     """)
 
 @st.cache_data(ttl=3600)
-def get_metrics_custom_session(sym):
+def get_finnhub_metrics(sym):
+    url = f"https://finnhub.io/api/v1/stock/metric?symbol={sym}&metric=all&token={FINNHUB_API_KEY}"
     try:
-        t = yf.Ticker(sym, session=session)
-        info = t.info or {}
+        res = requests.get(url).json()
+        metrics = res.get("metric", {})
         
-        def safe_get(key, multiplier=1):
-            val = info.get(key)
-            if val is not None and isinstance(val, (int, float)):
-                return round(val * multiplier, 2)
-            return "N/A"
-
         return {
             "Ticker": sym,
-            "P/E Ratio": safe_get("trailingPE"),
-            "Forward P/E": safe_get("forwardPE"),
-            "PEG Ratio": safe_get("pegRatio"),
-            "ROE (%)": safe_get("returnOnEquity", 100),
-            "Gross Margin (%)": safe_get("grossMargins", 100),
-            "Debt-to-Equity": safe_get("debtToEquity")
+            "P/E Ratio": round(metrics.get("peBasicExclExtraTTM"), 2) if metrics.get("peBasicExclExtraTTM") else "N/A",
+            "Forward P/E": round(metrics.get("peNormalizedAnnual"), 2) if metrics.get("peNormalizedAnnual") else "N/A",
+            "ROE (%)": round(metrics.get("roeTTM"), 2) if metrics.get("roeTTM") else "N/A",
+            "Gross Margin (%)": round(metrics.get("grossMarginTTM"), 2) if metrics.get("grossMarginTTM") else "N/A",
+            "Debt-to-Equity": round(metrics.get("totalDebtToEquityQuarterly"), 2) if metrics.get("totalDebtToEquityQuarterly") else "N/A"
         }
     except Exception:
-        return {"Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", "PEG Ratio": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"}
+        return {"Ticker": sym, "P/E Ratio": "N/A", "Forward P/E": "N/A", "ROE (%)": "N/A", "Gross Margin (%)": "N/A", "Debt-to-Equity": "N/A"}
 
 all_tickers = [ticker_symbol] + peers
 metrics_list = []
 
-with st.spinner("Fetching live peer metrics..."):
+with st.spinner("Fetching live peer metrics via Finnhub..."):
     for s in all_tickers:
-        metrics_list.append(get_metrics_custom_session(s))
+        metrics_list.append(get_finnhub_metrics(s))
 
 comparison_df = pd.DataFrame(metrics_list).set_index("Ticker")
 st.dataframe(comparison_df)
@@ -118,39 +113,51 @@ st.dataframe(comparison_df)
 # --- PANEL 4: WALL STREET ANALYST TARGETS & RATINGS ---
 st.header("4. Wall Street Analyst Price Targets & Consensus")
 
-try:
-    targets = ticker.analyst_price_targets
-    info = ticker.info or {}
-    current_price = info.get("currentPrice") or info.get("regularMarketPrice", "N/A")
-    recommendation = str(info.get("recommendationKey", "N/A")).replace("_", " ").title()
-    num_analysts = info.get("numberOfAnalystOpinions", "N/A")
+@st.cache_data(ttl=3600)
+def get_finnhub_analysts(sym):
+    target_url = f"https://finnhub.io/api/v1/stock/price-target?symbol={sym}&token={FINNHUB_API_KEY}"
+    quote_url = f"https://finnhub.io/api/v1/quote?symbol={sym}&token={FINNHUB_API_KEY}"
+    
+    try:
+        target_res = requests.get(target_url).json()
+        quote_res = requests.get(quote_url).json()
+        
+        current_price = quote_res.get("c")
+        mean_target = target_res.get("targetMean")
+        low_target = target_res.get("targetLow")
+        high_target = target_res.get("targetHigh")
+        
+        return {
+            "current": current_price,
+            "mean": mean_target,
+            "low": low_target,
+            "high": high_target
+        }
+    except Exception:
+        return None
 
-    if targets:
-        mean_target = targets.get('mean')
-        low_target = targets.get('low')
-        high_target = targets.get('high')
-        current = targets.get('current', current_price)
+analyst_data = get_finnhub_analysts(ticker_symbol)
 
-        if mean_target and current and isinstance(current, (int, float)):
-            upside = round(((mean_target - current) / current) * 100, 2)
-            upside_str = f"{'+' if upside > 0 else ''}{upside}%"
-        else:
-            upside_str = "N/A"
+if analyst_data and analyst_data.get("mean"):
+    current = analyst_data["current"]
+    mean_target = analyst_data["mean"]
+    low_target = analyst_data["low"]
+    high_target = analyst_data["high"]
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Consensus Rating", recommendation, f"{num_analysts} Analysts")
-        c2.metric("Current Price", f"${current}")
-        c3.metric("Mean Price Target", f"${mean_target}", upside_str)
-        c4.metric("Target Range", f"${low_target} - ${high_target}")
+    upside = round(((mean_target - current) / current) * 100, 2) if current and mean_target else "N/A"
+    upside_str = f"{'+' if isinstance(upside, float) and upside > 0 else ''}{upside}%"
 
-        if low_target and high_target and current and isinstance(current, (int, float)):
-            st.subheader("Price Target Spread")
-            st.write(f"**Low:** ${low_target} | **Current:** ${current} | **Mean Target:** ${mean_target} | **High:** ${high_target}")
-            spread = high_target - low_target
-            if spread > 0:
-                pos = min(max((current - low_target) / spread, 0.0), 1.0)
-                st.progress(pos, text=f"Current Price Position in Analyst Range: {round(pos * 100, 1)}%")
-    else:
-        st.warning("Analyst price target data is currently unavailable for this ticker.")
-except Exception as e:
-    st.error(f"Could not load analyst data: {e}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Current Price", f"${current}" if current else "N/A")
+    c2.metric("Mean Price Target", f"${mean_target}" if mean_target else "N/A", upside_str)
+    c3.metric("Target Range", f"${low_target} - ${high_target}" if low_target and high_target else "N/A")
+
+    if low_target and high_target and current:
+        st.subheader("Price Target Spread")
+        st.write(f"**Low:** ${low_target} | **Current:** ${current} | **Mean Target:** ${mean_target} | **High:** ${high_target}")
+        spread = high_target - low_target
+        if spread > 0:
+            pos = min(max((current - low_target) / spread, 0.0), 1.0)
+            st.progress(pos, text=f"Current Price Position in Analyst Range: {round(pos * 100, 1)}%")
+else:
+    st.warning("Analyst price target data is currently unavailable for this ticker.")
