@@ -3,18 +3,15 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
+from curl_cffi import requests
 from ta.volatility import BollingerBands
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("📈 Interactive Stock Ticker Dashboard")
 
-# Custom requests session to bypass cloud IP blocking
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-})
+# Session with curl_cffi impersonation to bypass Yahoo's 401 Unauthorized block
+session = requests.Session(impersonate="chrome")
 
 # --- SIDEBAR INPUTS ---
 ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="AAPL").upper()
@@ -88,7 +85,7 @@ with st.expander("📖 What do these competitor metrics mean?"):
 def get_metrics_custom_session(sym):
     try:
         t = yf.Ticker(sym, session=session)
-        info = t.info
+        info = t.info or {}
         
         def safe_get(key, multiplier=1):
             val = info.get(key)
@@ -123,9 +120,9 @@ st.header("4. Wall Street Analyst Price Targets & Consensus")
 
 try:
     targets = ticker.analyst_price_targets
-    info = ticker.info
+    info = ticker.info or {}
     current_price = info.get("currentPrice") or info.get("regularMarketPrice", "N/A")
-    recommendation = info.get("recommendationKey", "N/A").replace("_", " ").title()
+    recommendation = str(info.get("recommendationKey", "N/A")).replace("_", " ").title()
     num_analysts = info.get("numberOfAnalystOpinions", "N/A")
 
     if targets:
