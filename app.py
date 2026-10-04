@@ -22,25 +22,81 @@ ticker = yf.Ticker(ticker_symbol)
 # --- PANEL 1: INDICATIVE FUTURE TRADING BANDS ---
 st.header(f"1. Price & Trading Bands ({ticker_symbol})")
 
-hist = ticker.history(period="1y")
+timeframe_options = {
+    "1 Week": "5d",
+    "1 Month": "1mo",
+    "6 Months": "6mo",
+    "1 Year": "1y",
+    "5 Years": "5y",
+    "10 Years": "10y"
+}
 
-if not hist.empty:
-    indicator_bb = BollingerBands(close=hist["Close"], window=20, window_dev=2)
+selected_label = st.radio(
+    "Select Timeframe:", 
+    options=list(timeframe_options.keys()), 
+    index=3,  # Default to '1 Year'
+    horizontal=True
+)
+
+period_param = timeframe_options[selected_label]
+hist = ticker.history(period=period_param)
+
+if not hist.empty and len(hist) >= 5:
+    # Calculate Bollinger Bands
+    window_size = min(20, len(hist))
+    indicator_bb = BollingerBands(close=hist["Close"], window=window_size, window_dev=2)
     hist["BB_Upper"] = indicator_bb.bollinger_hband()
     hist["BB_Lower"] = indicator_bb.bollinger_lband()
     hist["SMA_20"] = indicator_bb.bollinger_mavg()
 
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'],
-                                 low=hist['Low'], close=hist['Close'], name='Price'))
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['BB_Upper'], line=dict(color='red', width=1), name='Upper Band'))
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['BB_Lower'], line=dict(color='green', width=1), name='Lower Band', fill='tonexty'))
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_20'], line=dict(color='blue', width=1), name='20-Day SMA'))
 
-    fig.update_layout(title="Historical Price with Bollinger Bands (Indicative Bounds)", xaxis_rangeslider_visible=False)
+    # Candlestick chart
+    fig.add_trace(go.Candlestick(
+        x=hist.index, 
+        open=hist['Open'], 
+        high=hist['High'],
+        low=hist['Low'], 
+        close=hist['Close'], 
+        name='Price'
+    ))
+
+    # Lower Band
+    fig.add_trace(go.Scatter(
+        x=hist.index, 
+        y=hist['BB_Lower'], 
+        line=dict(color='rgba(0, 128, 0, 0.3)', width=1), 
+        name='Lower Band',
+        showlegend=True
+    ))
+
+    # Upper Band with region fill
+    fig.add_trace(go.Scatter(
+        x=hist.index, 
+        y=hist['BB_Upper'], 
+        line=dict(color='rgba(255, 0, 0, 0.3)', width=1), 
+        name='Upper Band',
+        fill='tonexty',
+        fillcolor='rgba(128, 128, 128, 0.1)',
+        showlegend=True
+    ))
+
+    # Moving Average
+    fig.add_trace(go.Scatter(
+        x=hist.index, 
+        y=hist['SMA_20'], 
+        line=dict(color='blue', width=1.5), 
+        name=f'{window_size}-Period SMA'
+    ))
+
+    fig.update_layout(
+        title=f"Historical Price with Bollinger Bands ({selected_label})", 
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified"
+    )
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.error("Invalid ticker or missing historical data.")
+    st.error("Invalid ticker or missing historical data for the selected timeframe.")
 
 # --- PANEL 2: KEY NEWS & SENTIMENT ANALYSIS ---
 st.header("2. Key News & Sentiment")
@@ -221,17 +277,18 @@ with st.expander("📖 What do Overbought, Neutral, and Oversold mean?"):
     - **🟢 Oversold:** The stock has experienced heavy selling pressure, driving technical momentum down (RSI < 30) or price below its lower trading band, often creating an attractive risk/reward entry point for long-term investors.
     """)
 
-if not hist.empty and len(hist) > 30:
-    # 1. Technical Calculations
-    rsi_series = RSIIndicator(close=hist["Close"], window=14).rsi()
+analyst_hist = ticker.history(period="1y")
+
+if not analyst_hist.empty and len(analyst_hist) > 30:
+    rsi_series = RSIIndicator(close=analyst_hist["Close"], window=14).rsi()
     current_rsi = round(rsi_series.dropna().iloc[-1], 2)
     
-    current_price = hist["Close"].iloc[-1]
-    bb_upper = hist["BB_Upper"].dropna().iloc[-1]
-    bb_lower = hist["BB_Lower"].dropna().iloc[-1]
-    bb_sma = hist["SMA_20"].dropna().iloc[-1]
+    current_price = analyst_hist["Close"].iloc[-1]
+    bb_indicator = BollingerBands(close=analyst_hist["Close"], window=20, window_dev=2)
+    bb_upper = bb_indicator.bollinger_hband().dropna().iloc[-1]
+    bb_lower = bb_indicator.bollinger_lband().dropna().iloc[-1]
+    bb_sma = bb_indicator.bollinger_mavg().dropna().iloc[-1]
 
-    # 2. Fundamental & Financial Statement Extraction
     pe_val, margin_val, roe_val = "N/A", "N/A", "N/A"
     try:
         income = ticker.financials
@@ -254,7 +311,6 @@ if not hist.empty and len(hist) > 30:
     except Exception:
         pass
 
-    # 3. Dynamic Technical & Fundamental Rating Logic
     if current_rsi > 70 or current_price >= bb_upper:
         rating = "OVERBOUGHT"
         rating_color = "🔴"
@@ -268,7 +324,6 @@ if not hist.empty and len(hist) > 30:
         rating_color = "🟡"
         recommendation_text = f"**{ticker_symbol}** is currently trading within normal technical bounds. Its RSI stands at **{current_rsi}**, well within balanced territory, and price action remains centered near its 20-day moving average (${round(bb_sma, 2)})."
 
-    # 4. Render Metric Summary Dashboard
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Analyst Rating", f"{rating_color} {rating}")
     c2.metric("14-Day RSI", f"{current_rsi}")
@@ -278,7 +333,6 @@ if not hist.empty and len(hist) > 30:
     st.markdown("### Executive Summary & Technical Breakdown")
     st.write(recommendation_text)
 
-    # 5. Summary Analysis Box
     st.info(f"""
     **Financial & Technical Breakdown Summary for {ticker_symbol}:**
     - **Valuation & Efficiency:** P/E Ratio: **{pe_val}** | Gross Margin: **{margin_val}** | ROE: **{roe_val}**
