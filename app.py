@@ -4,12 +4,10 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
-
-try:
-    from datetime import datetime
-except ImportError:
-    import datetime
+import requests
+from datetime import datetime
 
 from ta.volatility import BollingerBands
 from ta.momentum import RSIIndicator
@@ -28,13 +26,70 @@ peers = [p.strip().upper() for p in peer_symbols.split(",") if p.strip()]
 
 ticker = yf.Ticker(ticker_symbol)
 
+# --- HELPER: WIKIDATA / WIKIPEDIA FOUNDING YEAR RETRIEVAL ---
+def get_founding_year_wikidata(company_name):
+    try:
+        search_url = f"https://www.wikidata.org/w/api.php?action=wbsearchentities&search={urllib.parse.quote(company_name)}&language=en&format=json"
+        headers = {'User-Agent': 'StockDashboardApp/1.0'}
+        res = requests.get(search_url, headers=headers, timeout=5).json()
+
+        if not res.get('search'):
+            return None
+
+        entity_id = res['search'][0]['id']
+
+        entity_url = f"https://www.wikidata.org/wiki/Special:EntityData/{entity_id}.json"
+        data = requests.get(entity_url, headers=headers, timeout=5).json()
+
+        claims = data['entities'][entity_id]['claims']
+
+        # P571 = Inception / Founded date in Wikidata
+        if 'P571' in claims:
+            time_str = claims['P571'][0]['mainsnak']['datavalue']['value']['time']
+            founding_year = int(time_str.split('-')[0].replace('+', ''))
+            return founding_year
+    except Exception:
+        pass
+    return None
+
 # --- PANEL 1: COMPANY PROFILE & MOAT ANALYSIS ---
 st.header(f"1. Company Profile & Strategic Overview ({ticker_symbol})")
 
 @st.cache_data(ttl=86400)
 def get_company_profile(sym):
     try:
-        info = yf.Ticker(sym).info
+        t = yf.Ticker(sym)
+        info = t.info
+        current_year = datetime.now().year
+        company_name = info.get("longName", sym)
+
+        # 1. Try yfinance metadata
+        founded_year = info.get("startDate") or info.get("firstTradeDateEpochUtc")
+        calculated_age = None
+
+        if founded_year:
+            if isinstance(founded_year, int) and founded_year > 1800:
+                calculated_age = f"{current_year - founded_year} years (Founded ~{founded_year})"
+            elif isinstance(founded_year, (int, float)):
+                est_year = datetime.fromtimestamp(founded_year).year
+                calculated_age = f"Public for {current_year - est_year} years (IPO ~{est_year})"
+
+        # 2. Try Wikidata / Wikipedia lookup
+        if not calculated_age:
+            wiki_year = get_founding_year_wikidata(company_name)
+            if wiki_year:
+                calculated_age = f"{current_year - wiki_year} years (Founded ~{wiki_year} via Wikipedia)"
+
+        # 3. Fallback to earliest stock trade history date
+        if not calculated_age:
+            hist = t.history(period="max")
+            if not hist.empty:
+                first_year = hist.index[0].year
+                calculated_age = f"Public for {current_year - first_year}+ years (Trading since {first_year})"
+            else:
+                calculated_age = "N/A"
+
+        info["calculated_age"] = calculated_age
         return info
     except Exception:
         return {}
@@ -45,20 +100,8 @@ if info:
     company_name = info.get("longName", ticker_symbol)
     sector = info.get("sector", "N/A")
     industry = info.get("industry", "N/A")
-    website = info.get("website", "#")
     long_desc = info.get("longBusinessSummary", "No summary available.")
-    
-    # Calculate approximate company age if founding year or history info exists
-    founded_year = info.get("startDate") or info.get("firstTradeDateEpochUtc")
-    current_year = datetime.now().year
-    
-    age_str = "N/A"
-    if founded_year:
-        if isinstance(founded_year, int) and founded_year > 1800:
-            age_str = f"{current_year - founded_year} years (Founded ~{founded_year})"
-        elif isinstance(founded_year, (int, float)): # Epoch timestamp
-            est_year = datetime.fromtimestamp(founded_year).year
-            age_str = f"Public for {current_year - est_year} years (IPO ~{est_year})"
+    age_str = info.get("calculated_age", "N/A")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Company Name", company_name)
@@ -356,7 +399,7 @@ def style_relative_to_ref(df):
 
     ref_row = df.iloc[0]
 
-    # --- COLOR ROW 0 (REFERENCE TICKER) RELATIVE TO PEER AVERAGE ---
+    # --- COLOR ROW 0 RELATIVE TO PEER AVERAGE ---
     if len(df) > 1:
         peer_avg = df.iloc[1:].mean(numeric_only=True)
         for col in df.columns:
