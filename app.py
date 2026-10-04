@@ -189,8 +189,18 @@ if ticker:
     profile = get_company_profile(ticker)
 
   if profile:
-    st.header(f"{profile.get('longName', ticker)} ({ticker})")
+    # Header Section: Company Name (Left) and Logo (Top Right)
+    head_col1, head_col2 = st.columns([5, 1])
 
+    with head_col1:
+      st.header(f"{profile.get('longName', ticker)} ({ticker})")
+
+    with head_col2:
+      logo_url = profile.get("logo_url")
+      if logo_url:
+        st.image(logo_url, width=100)
+
+    # Key Metrics Metrics Row
     col1, col2, col3, col4 = st.columns(4)
     with col1:
       price = profile.get(
