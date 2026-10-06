@@ -75,3 +75,46 @@ def get_company_profile(sym):
                 calculated_age = f"Public for {current_year - est_year} years (IPO ~{est_year})"
 
         # 2. Try Wikidata / Wikipedia lookup
+        if not calculated_age:
+            wiki_year = get_founding_year_wikidata(company_name)
+            if wiki_year:
+                calculated_age = f"{current_year - wiki_year} years (Founded ~{wiki_year} via Wikipedia)"
+
+        # 3. Fallback to earliest stock trade history date
+        if not calculated_age:
+            hist = t.history(period="max")
+            if not hist.empty:
+                first_year = hist.index[0].year
+                calculated_age = f"Public for {current_year - first_year}+ years (Trading since {first_year})"
+            else:
+                calculated_age = "N/A"
+
+        info["calculated_age"] = calculated_age
+        return info
+    except Exception:
+        return {}
+
+info = get_company_profile(ticker_symbol)
+
+if info:
+    company_name = info.get("longName", ticker_symbol)
+    sector = info.get("sector", "N/A")
+    industry = info.get("industry", "N/A")
+    long_desc = info.get("longBusinessSummary", "No summary available.")
+    age_str = info.get("calculated_age", "N/A")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Company Name", company_name)
+    c2.metric("Sector / Industry", f"{sector} | {industry}")
+    c3.metric("Company Age / History", age_str)
+
+    st.markdown("### 🏢 Business Overview & Products")
+    st.write(long_desc)
+
+    st.markdown("### 🏰 Competitive Advantage & MOAT Overview")
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown(f"""
+        **🔑 Products & Ecosystem:**
+        - **Core Offerings:** Broad portfolio across {industry} solutions, enterprise software, and integrated services.
