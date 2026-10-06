@@ -1,19 +1,16 @@
-import json
-import re
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-from datetime import datetime
-
-import bs4
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-import requests
 import streamlit as st
 import yfinance as yf
-from ta.momentum import RSIIndicator
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
+import requests
+from datetime import datetime
+
 from ta.volatility import BollingerBands
+from ta.momentum import RSIIndicator
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
@@ -28,25 +25,6 @@ peer_symbols = st.sidebar.text_input(
 peers = [p.strip().upper() for p in peer_symbols.split(",") if p.strip()]
 
 ticker = yf.Ticker(ticker_symbol)
-
-# --- HELPER: COMPANY LOGO RETRIEVAL ---
-def get_company_logo_url(website_url):
-    """Fetches company logo via Clearbit or Google Favicon service using domain."""
-    domain = ""
-    if website_url:
-        domain = website_url.replace("https://", "").replace("http://", "").strip()
-        domain = domain.split("/")[0].replace("www.", "")
-
-    if domain:
-        clearbit_url = f"https://logo.clearbit.com/{domain}"
-        try:
-            resp = requests.get(clearbit_url, timeout=2)
-            if resp.status_code == 200:
-                return clearbit_url
-        except Exception:
-            pass
-        return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
-    return None
 
 # --- HELPER: WIKIDATA / WIKIPEDIA FOUNDING YEAR RETRIEVAL ---
 def get_founding_year_wikidata(company_name):
@@ -124,22 +102,11 @@ if info:
     industry = info.get("industry", "N/A")
     long_desc = info.get("longBusinessSummary", "No summary available.")
     age_str = info.get("calculated_age", "N/A")
-    website = info.get("website", "")
-    
-    logo_url = get_company_logo_url(website)
 
-    c_logo, c1, c2, c3 = st.columns([1, 3, 3, 3])
-    with c_logo:
-        if logo_url:
-            st.image(logo_url, width=80)
-        else:
-            st.write(f"### {ticker_symbol}")
-    with c1:
-        st.metric("Company Name", company_name)
-    with c2:
-        st.metric("Sector / Industry", f"{sector} | {industry}")
-    with c3:
-        st.metric("Company Age / History", age_str)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Company Name", company_name)
+    c2.metric("Sector / Industry", f"{sector} | {industry}")
+    c3.metric("Company Age / History", age_str)
 
     st.markdown("### 🏢 Business Overview & Products")
     st.write(long_desc)
@@ -553,4 +520,105 @@ if not analyst_hist.empty and len(analyst_hist) > 30:
     if current_rsi > 70 or current_price >= bb_upper:
         rating = "OVERBOUGHT"
         rating_color = "🔴"
-        recommendation_text = f"**{ticker_symbol}** is displaying strong bullish momentum that has pushed technical indicators into extended territory. With a 14-day RSI of **{current_rsi}** and
+        recommendation_text = f"**{ticker_symbol}** is displaying strong bullish momentum that has pushed technical indicators into extended territory. With a 14-day RSI of **{current_rsi}** and trading near or above its upper Bollinger Band (${round(bb_upper, 2)}), the stock shows potential risk for short-term profit taking or consolidation."
+    elif current_rsi < 30 or current_price <= bb_lower:
+        rating = "OVERSOLD"
+        rating_color = "🟢"
+        recommendation_text = f"**{ticker_symbol}** is currently experiencing significant downward momentum. With an RSI of **{current_rsi}** and trading near or below its lower Bollinger Band (${round(bb_lower, 2)}), selling pressure appears extended, presenting potential mean-reversion buying opportunities."
+    else:
+        rating = "NEUTRAL"
+        rating_color = "🟡"
+        recommendation_text = f"**{ticker_symbol}** is currently trading within normal technical bounds. Its RSI stands at **{current_rsi}**, well within balanced territory, and price action remains centered near its 20-day moving average (${round(bb_sma, 2)})."
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Analyst Rating", f"{rating_color} {rating}")
+    c2.metric("14-Day RSI", f"{current_rsi}")
+    c3.metric("Current Price", f"${round(current_price, 2)}")
+    c4.metric("20-Day SMA", f"${round(bb_sma, 2)}")
+
+    st.markdown("### Executive Summary & Technical Breakdown")
+    st.write(recommendation_text)
+
+    st.info(f"""
+    **Financial & Technical Breakdown Summary for {ticker_symbol}:**
+    - **Valuation & Efficiency:** P/E Ratio: **{pe_val}** | Gross Margin: **{margin_val}** | ROE: **{roe_val}**
+    - **Bollinger Bands:** Upper Bound: **${round(bb_upper, 2)}** | Lower Bound: **${round(bb_lower, 2)}**
+    - **Analyst Note:** Always evaluate overall macroeconomic conditions and sector trends in tandem with technical RSI levels.
+    """)
+else:
+    st.warning("Insufficient historical price data available to generate technical analyst analysis.")
+
+# --- PANEL 6: COMPANY PERFORMANCE ---
+st.header(f"6. Company Performance ({ticker_symbol})")
+
+@st.cache_data(ttl=3600)
+def get_quarterly_financials(sym):
+    t = yf.Ticker(sym)
+    q_financials = t.quarterly_financials
+    if q_financials.empty:
+        return pd.DataFrame()
+    return q_financials
+
+q_fin = get_quarterly_financials(ticker_symbol)
+
+if not q_fin.empty and q_fin.shape[1] >= 1:
+    cols = list(q_fin.columns)
+    
+    metric_keys = {
+        "Total Revenue": "Revenue ($M)",
+        "Gross Profit": "Gross Profit ($M)",
+        "Operating Income": "Operating Income ($M)",
+        "Net Income": "Net Income ($M)",
+        "EBITDA": "EBITDA ($M)"
+    }
+    
+    rows = []
+    
+    q0_date = cols[0].strftime("%Y-%m-%d") if hasattr(cols[0], "strftime") else str(cols[0])
+    q1_date = cols[1].strftime("%Y-%m-%d") if len(cols) > 1 and hasattr(cols[1], "strftime") else (str(cols[1]) if len(cols) > 1 else "N/A")
+    q4_date = cols[4].strftime("%Y-%m-%d") if len(cols) > 4 and hasattr(cols[4], "strftime") else (str(cols[4]) if len(cols) > 4 else "N/A")
+
+    for key, display_name in metric_keys.items():
+        if key in q_fin.index:
+            v0 = q_fin.loc[key].iloc[0] / 1e6 if pd.notna(q_fin.loc[key].iloc[0]) else np.nan
+            v1 = q_fin.loc[key].iloc[1] / 1e6 if len(cols) > 1 and pd.notna(q_fin.loc[key].iloc[1]) else np.nan
+            v4 = q_fin.loc[key].iloc[4] / 1e6 if len(cols) > 4 and pd.notna(q_fin.loc[key].iloc[4]) else np.nan
+
+            qoq_pct = ((v0 - v1) / abs(v1)) * 100 if pd.notna(v0) and pd.notna(v1) and v1 != 0 else np.nan
+            yoy_pct = ((v0 - v4) / abs(v4)) * 100 if pd.notna(v0) and pd.notna(v4) and v4 != 0 else np.nan
+
+            rows.append({
+                "Financial Metric": display_name,
+                f"Latest ({q0_date})": round(v0, 2) if pd.notna(v0) else np.nan,
+                f"Prior Qtr ({q1_date})": round(v1, 2) if pd.notna(v1) else np.nan,
+                "QoQ Growth (%)": round(qoq_pct, 2) if pd.notna(qoq_pct) else np.nan,
+                f"Prior Year Qtr ({q4_date})": round(v4, 2) if pd.notna(v4) else np.nan,
+                "YoY Growth (%)": round(yoy_pct, 2) if pd.notna(yoy_pct) else np.nan
+            })
+
+    df_perf = pd.DataFrame(rows).set_index("Financial Metric")
+
+    def style_performance(df):
+        styles = pd.DataFrame('', index=df.index, columns=df.columns)
+        green_style = 'background-color: #1e4620; color: #4cd964; font-weight: bold;'
+        red_style = 'background-color: #5c1d24; color: #ff6b6b; font-weight: bold;'
+
+        for idx in range(len(df)):
+            for col in df.columns:
+                if "Growth (%)" in col:
+                    val = df.iloc[idx][col]
+                    if pd.notna(val):
+                        if val > 0:
+                            styles.iloc[idx][df.columns.get_loc(col)] = green_style
+                        elif val < 0:
+                            styles.iloc[idx][df.columns.get_loc(col)] = red_style
+        return styles
+
+    styled_perf = df_perf.style.apply(style_performance, axis=None)\
+        .format("{:+.2f}%", subset=[c for c in df_perf.columns if "Growth" in c], na_rep="N/A")\
+        .format("{:,.2f}", subset=[c for c in df_perf.columns if "Growth" not in c], na_rep="N/A")
+
+    st.write(styled_perf.to_html(classes='custom-table'), unsafe_allow_html=True)
+
+else:
+    st.warning("Quarterly financial report data is currently unavailable for this ticker.")
