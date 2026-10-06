@@ -17,12 +17,7 @@ st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("📈 Interactive Stock Ticker Dashboard")
 
 # --- SIDEBAR INPUTS ---
-ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="FTNT").upper()
-peer_symbols = st.sidebar.text_input(
-    "Enter Peers (comma-separated):", 
-    value="MU, META, AMZN, AVGO, MSFT, GOOGL, NVDA"
-)
-peers = [p.strip().upper() for p in peer_symbols.split(",") if p.strip()]
+ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="RMD").upper()
 
 ticker = yf.Ticker(ticker_symbol)
 
@@ -96,6 +91,18 @@ def get_company_profile(sym):
 
 info = get_company_profile(ticker_symbol)
 
+# Dynamic Peer Generation based on Sector / Ticker
+def get_default_peers(sym, sector):
+    medtech_peers = "PHG, INSP, INGN, SYK, MDT"
+    tech_peers = "MU, META, AMZN, AVGO, MSFT, GOOGL, NVDA"
+    if sym == "RMD" or sector == "Healthcare":
+        return medtech_peers
+    return tech_peers
+
+default_peer_str = get_default_peers(ticker_symbol, info.get("sector", ""))
+peer_symbols = st.sidebar.text_input("Enter Peers (comma-separated):", value=default_peer_str)
+peers = [p.strip().upper() for p in peer_symbols.split(",") if p.strip()]
+
 if info:
     company_name = info.get("longName", ticker_symbol)
     sector = info.get("sector", "N/A")
@@ -104,29 +111,19 @@ if info:
     age_str = info.get("calculated_age", "N/A")
     website = info.get("website", "")
 
-    # Multi-tier logo retrieval strategy
-    logo_url = f"https://raw.githubusercontent.com/paritech/stock-logos/main/logos/{ticker_symbol}.png"
-    
-    # Check if Paritech logo exists, else fallback to Google Favicon service
-    try:
-        res = requests.head(logo_url, timeout=2)
-        if res.status_code != 200 and website:
-            domain = urllib.parse.urlparse(website).netloc.replace("www.", "")
-            if domain:
-                logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
-    except Exception:
-        if website:
-            domain = urllib.parse.urlparse(website).netloc.replace("www.", "")
+    # Reliable Favicon / Logo Retrieval Strategy
+    logo_url = None
+    if website:
+        domain = urllib.parse.urlparse(website).netloc.replace("www.", "")
+        if domain:
             logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
-        else:
-            logo_url = None
 
     # Display Header with Logo
     if logo_url:
         st.markdown(
             f"""
             <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
-                <img src="{logo_url}" style="width: 50px; height: 50px; object-fit: contain; border-radius: 8px; background-color: #ffffff; padding: 4px;">
+                <img src="{logo_url}" style="width: 48px; height: 48px; object-fit: contain; border-radius: 8px; background-color: #ffffff; padding: 4px; border: 1px solid #30363d;">
                 <h2 style="margin: 0; padding: 0;">{company_name} ({ticker_symbol})</h2>
             </div>
             """,
@@ -150,13 +147,13 @@ if info:
         st.markdown(f"""
         **🔑 Products & Ecosystem:**
         - **Core Offerings:** Broad portfolio across {industry} solutions, enterprise software, and integrated services.
-        - **Target Market:** Global enterprise clients, cloud service providers, and commercial customers.
+        - **Target Market:** Global enterprise clients, healthcare providers, and commercial customers.
         """)
         
         st.markdown(f"""
-        **🛡️ Economic MOAT Drivers:**
-        - **High Switching Costs:** Deep integration into customer enterprise IT infrastructure makes migration expensive and high-risk.
-        - **Network & Scale Effects:** Proprietary technology stacks and large customer bases create high barriers to entry for new market players.
+        **🛡️️ Economic MOAT Drivers:**
+        - **High Switching Costs:** Deep integration into customer cloud ecosystems and IT infrastructure makes migration expensive and high-risk.
+        - **Network & Scale Effects:** Proprietary technology stacks and large active user bases create high barriers to entry for new market players.
         """)
 
     with col_b:
