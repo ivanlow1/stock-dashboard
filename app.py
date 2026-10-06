@@ -1,215 +1,207 @@
-import json
-import re
-import urllib.parse
-from datetime import datetime
-import bs4
-import requests
 import streamlit as st
 import yfinance as yf
+import requests
 
-# Page setup
+# Page configuration
 st.set_page_config(
     page_title="Stock Analysis Dashboard",
     page_icon="📈",
-    layout="wide",
+    layout="wide"
 )
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    )
-}
-
-
-# --- LOGO HELPER ---
-def get_company_logo_url(website_url, ticker_symbol):
-  """Fetches company logo via Clearbit or Google Favicon service using domain."""
-  domain = ""
-  if website_url:
+# --- HELPER: COMPANY LOGO ---
+def get_company_logo(website_url):
+    """Generates a reliable favicon URL from the company domain."""
+    if not website_url:
+        return None
     domain = website_url.replace("https://", "").replace("http://", "").strip()
     domain = domain.split("/")[0].replace("www.", "")
+    if domain:
+        return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+    return None
 
-  if domain:
-    clearbit_url = f"https://logo.clearbit.com/{domain}"
+
+# --- HELPER: COMPETITORS MAP ---
+def get_competitors(ticker_symbol, sector, industry):
+    """Maps direct industry peers dynamically without triggering 403 web scrapers."""
+    # Sector & Industry mapping table
+    PEER_MAP = {
+        "cybersecurity": ["PANW", "CRWD", "CHKP", "ZS", "NET"],
+        "software - infrastructure": ["MSFT", "ORCL", "SNOW", "DDOG", "PANW"],
+        "software - application": ["CRM", "NOW", "ADBE", "ORCL", "SAP"],
+        "semiconductors": ["NVDA", "AMD", "AVGO", "QCOM", "INTC"],
+        "consumer electronics": ["AAPL", "DELL", "HPQ", "SONY"],
+        "internet retail": ["AMZN", "BABA", "EBAY", "PDD"],
+        "banks": ["JPM", "BAC", "MS", "GS", "C"],
+        "automobiles": ["TSLA", "F", "GM", "TM"]
+    }
+    
+    ticker_clean = ticker_symbol.upper()
+    search_term = f"{industry} {sector}".lower()
+    
+    # Try finding sector key match
+    for key, peers in PEER_MAP.items():
+        if key in search_term:
+            return [p for p in peers if p != ticker_clean]
+            
+    # Fallback to general tech peers if no match found
+    return ["PANW", "CRWD", "CHKP", "MSFT"]
+
+
+# --- HELPER: MOAT ANALYZER ---
+def analyze_moat(profile, ticker_symbol):
+    """Generates dynamic MOAT drivers and ecosystem details based on profile info."""
+    summary = profile.get("longBusinessSummary", "").lower()
+    industry = profile.get("industry", "Technology")
+    sector = profile.get("sector", "Technology")
+    mcap = profile.get("marketCap", 0)
+    company_name = profile.get("shortName") or profile.get("longName") or ticker_symbol
+
+    # Products & Ecosystem
+    if any(k in summary for k in ["security", "firewall", "cyber", "threat"]):
+        core_offerings = "Integrated cybersecurity platform, enterprise network security appliances, and AI-driven threat prevention."
+    elif any(k in summary for k in ["cloud", "saas", "software"]):
+        core_offerings = "Cloud-native enterprise software, SaaS platform subscriptions, and automated workflow modules."
+    else:
+        core_offerings = f"Comprehensive {industry} product portfolio and specialized enterprise solution packages."
+
+    target_market = f"Enterprise organizations, commercial clients, and public sector accounts across the {sector} landscape."
+
+    # Economic MOAT Drivers
+    moat_drivers = []
+    if any(k in summary for k in ["platform", "subscription", "integration", "enterprise", "cloud"]):
+        moat_drivers.append((
+            "High Switching Costs",
+            f"Deep integration of {company_name}'s architecture into customer IT workflows makes vendor migration risky and expensive."
+        ))
+
+    if any(k in summary for k in ["patent", "proprietary", "asic", "technology", "algorithm"]):
+        moat_drivers.append((
+            "Proprietary Technology",
+            f"Custom-engineered intellectual property and proprietary technology provide superior performance efficiency over competitors."
+        ))
+
+    if mcap > 20_000_000_000:
+        moat_drivers.append((
+            "Scale & Global Footprint",
+            f"Large operating scale allows {company_name} to re-invest heavily into continuous R&D and maintain global channel presence."
+        ))
+
+    if not moat_drivers:
+        moat_drivers.append((
+            "Specialized Niche Position",
+            f"Strong foothold within the {industry} market supported by tailored client relationships."
+        ))
+
+    uniqueness = [
+        f"Consolidated product ecosystem offering a lower total cost of ownership (TCO) compared to point-solution peers.",
+        f"Strong customer stickiness and established brand authority within {sector}."
+    ]
+
+    return {
+        "core_offerings": core_offerings,
+        "target_market": target_market,
+        "moat_drivers": moat_drivers,
+        "uniqueness": uniqueness
+    }
+
+
+# --- CACHED DATA FETCH ---
+@st.cache_data(ttl=3600)
+def load_stock_data(symbol):
     try:
-      resp = requests.get(clearbit_url, timeout=2)
-      if resp.status_code == 200:
-        return clearbit_url
-    except Exception:
-      pass
-    return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
-  return None
+        ticker_obj = yf.Ticker(symbol)
+        info = ticker_obj.info
+        if not info or "shortName" not in info:
+            return None
+            
+        industry = info.get("industry", "")
+        sector = info.get("sector", "")
+        website = info.get("website", "")
+        
+        info["logo_url"] = get_company_logo(website)
+        info["peers"] = get_competitors(symbol, sector, industry)
+        info["moat"] = analyze_moat(info, symbol)
+        return info
+    except Exception as e:
+        return None
 
 
-# --- DYNAMIC COMPETITOR FETCHING ---
-def get_company_competitors(ticker_symbol, industry="", sector=""):
-  """Dynamically pulls direct industry peers instead of generic mega-cap tech stocks."""
-  competitors = []
-
-  # Sector/Industry peer map
-  industry_peer_map = {
-      "cybersecurity": ["PANW", "CRWD", "CHKP", "ZS", "NET"],
-      "software - infrastructure": ["MSFT", "ORCL", "SNOW", "DDOG", "PANW"],
-      "software - application": ["CRM", "NOW", "ADBE", "ORCL", "SAP"],
-      "semiconductors": ["NVDA", "AMD", "AVGO", "QCOM", "INTC"],
-      "consumer electronics": ["AAPL", "DELL", "HPQ", "SONY"],
-      "internet retail": ["AMZN", "BABA", "EBAY", "PDD"],
-      "financial": ["JPM", "BAC", "MS", "GS", "C"],
-  }
-
-  # Attempt 1: Scrape Finviz quote page for peers
-  try:
-    url = f"https://finviz.com/quote.ashx?t={ticker_symbol.upper()}"
-    resp = requests.get(url, headers=HEADERS, timeout=3)
-    if resp.status_code == 200:
-      soup = bs4.BeautifulSoup(resp.text, "html.parser")
-      for a in soup.find_all("a", class_="tab-link"):
-        href = a.get("href", "")
-        text = a.text.strip()
-        if (
-            "quote.ashx?t=" in href
-            and text != ticker_symbol.upper()
-            and len(text) <= 5
-            and text.isalpha()
-        ):
-          if text not in competitors:
-            competitors.append(text)
-        if len(competitors) >= 6:
-          break
-  except Exception:
-    pass
-
-  # Attempt 2: Fallback to Industry mapping if scraping yields < 2 peers
-  if len(competitors) < 2:
-    combined_text = f"{industry} {sector}".lower()
-    for key, peers in industry_peer_map.items():
-      if key in combined_text:
-        competitors = [p for p in peers if p != ticker_symbol.upper()]
-        break
-
-  return competitors if competitors else ["N/A"]
-
-
-# --- DYNAMIC MOAT & ADVANTAGE ANALYZER ---
-def analyze_company_moat(profile, ticker_symbol):
-  """Generates ticker-specific Competitive Advantages, Ecosystem, and MOAT Drivers."""
-  summary = profile.get("longBusinessSummary", "")
-  summary_lower = summary.lower()
-  industry = profile.get("industry", "Technology")
-  sector = profile.get("sector", "Technology")
-  mcap = profile.get("marketCap", 0)
-  company_name = profile.get("shortName") or profile.get("longName") or ticker_symbol
-
-  # 1. Products & Ecosystem
-  core_offerings = (
-      f"Broad portfolio across {industry} solutions, specialized hardware/software"
-      " products, and integrated enterprise services."
-  )
-  if "security" in summary_lower or "firewall" in summary_lower:
-    core_offerings = (
-        "Integrated cybersecurity platform, network security appliances"
-        " (FortiGate), SASE, and AI-powered threat intelligence services."
-    )
-  elif "cloud" in summary_lower or "saas" in summary_lower:
-    core_offerings = (
-        "Cloud-native software platform, enterprise SaaS subscriptions, and"
-        " workflow automation modules."
-  )
-
-  target_market = (
-      f"Global enterprise clients, commercial organizations, and government"
-      f" entities operating within the {sector} space."
-  )
-
-  # 2. Economic MOAT Drivers
-  moat_drivers = []
-  if any(
-      k in summary_lower
-      for k in ["platform", "subscription", "integration", "enterprise", "cloud"]
-  ):
-    moat_drivers.append((
-        "High Switching Costs",
-        (
-            f"Deep embedding of {company_name}'s solutions into client mission-critical"
-            " infrastructure makes vendor displacement high-cost and multi-year."
-        ),
-    ))
-
-  if any(
-      k in summary_lower
-      for k in ["patent", "proprietary", "asic", "architecture", "security"]
-  ):
-    moat_drivers.append((
-        "Proprietary Technology & ASICs",
-        (
-            f"Custom intellectual property and proprietary architectures provide"
-            " price-to-performance advantages over off-the-shelf competition."
-        ),
-    ))
-
-  if mcap > 20000000000:
-    moat_drivers.append((
-        "Scale & Global Footprint",
-        (
-            "Expansive global footprint and vast customer base enable heavy R&D"
-            " reinvestment and broader telemetry data collection."
-        ),
-    ))
-
-  if not moat_drivers:
-    moat_drivers.append((
-        "Niche Domain Expertise",
-        (
-            f"Specialized position within {industry} with established channel"
-            " partner ecosystems."
-        ),
-    ))
-
-  # 3. Key Uniqueness & Differentiation
-  uniqueness = [
-      (
-          f"Consolidated architecture reducing total cost of ownership (TCO)"
-          f" compared to point-product vendors in {industry}."
-      ),
-      (
-          f"Strong brand equity and sticky enterprise customer retention"
-          f" relative to generic {sector} peers."
-      ),
-  ]
-
-  return {
-      "core_offerings": core_offerings,
-      "target_market": target_market,
-      "moat_drivers": moat_drivers,
-      "uniqueness": uniqueness,
-  }
-
-
-# --- PROFILE DATA FETCH ---
-@st.cache_data(ttl=86400)
-def get_company_profile(sym):
-  try:
-    t = yf.Ticker(sym)
-    info = t.info or {}
-
-    website = info.get("website", "")
-    industry = info.get("industry", "")
-    sector = info.get("sector", "")
-
-    info["logo_image_url"] = get_company_logo_url(website, sym)
-    info["competitors"] = get_company_competitors(sym, industry, sector)
-    info["moat_analysis"] = analyze_company_moat(info, sym)
-
-    return info
-  except Exception as e:
-    st.error(f"Error retrieving profile for {sym}: {e}")
-    return {}
-
-
-# --- STREAMLIT UI LAYOUT ---
+# --- MAIN APP INTERFACE ---
 st.title("📊 Stock Analysis Dashboard")
 
-ticker = (
-    st.sidebar.text_input("Enter Ticker Symbol:", value="FTNT").strip().upper()
-)
+# Sidebar
+ticker_input = st.sidebar.text_input("Enter Ticker Symbol:", value="FTNT").strip().upper()
+
+if ticker_input:
+    with st.spinner(f"Loading data for {ticker_input}..."):
+        data = load_stock_data(ticker_input)
+
+    if data:
+        # Header section: Name + Logo
+        col_title, col_logo = st.columns([4, 1])
+        with col_title:
+            st.header(f"{data.get('longName', ticker_input)} ({ticker_input})")
+        with col_logo:
+            if data.get("logo_url"):
+                st.image(data["logo_url"], width=64)
+
+        # Key Metrics Row
+        m1, m2, m3, m4 = st.columns(4)
+        price = data.get("currentPrice") or data.get("regularMarketPrice") or data.get("previousClose") or "N/A"
+        mcap = data.get("marketCap")
+        
+        m1.metric("Current Price", f"${price}" if isinstance(price, (int, float)) else price)
+        m2.metric("Market Cap", f"${mcap:,.0f}" if isinstance(mcap, (int, float)) else "N/A")
+        m3.metric("Sector", data.get("sector", "N/A"))
+        m4.metric("Industry", data.get("industry", "N/A"))
+
+        st.markdown("---")
+
+        # MOAT Overview
+        st.subheader("🏰 Competitive Advantage & MOAT Overview")
+        left_col, right_col = st.columns(2)
+
+        moat = data["moat"]
+        peers = data["peers"]
+
+        with left_col:
+            st.markdown("🔑 **Products & Ecosystem:**")
+            st.markdown(f"- **Core Offerings:** {moat['core_offerings']}")
+            st.markdown(f"- **Target Market:** {moat['target_market']}")
+            
+            st.write("")
+            st.markdown("🗣️ **Economic MOAT Drivers:**")
+            for title, desc in moat["moat_drivers"]:
+                st.markdown(f"- **{title}:** {desc}")
+
+        with right_col:
+            st.markdown("⚔️ **Key Industry Competitors:**")
+            peer_list_str = ", ".join([f"`{p}`" for p in peers])
+            st.markdown(f"- **Primary peer ecosystem includes:** {peer_list_str}")
+
+            st.write("")
+            st.markdown("⭐ **Key Uniqueness & Differentiation:**")
+            for point in moat["uniqueness"]:
+                st.markdown(f"- {point}")
+
+        st.markdown("---")
+
+        # Business Summary & Table
+        st.subheader("📝 Business Summary")
+        st.write(data.get("longBusinessSummary", "No description available."))
+
+        st.subheader("📋 Key Details")
+        st.table({
+            "Attribute": ["Industry", "Employees", "Headquarters", "Website"],
+            "Value": [
+                data.get("industry", "N/A"),
+                f"{data.get('fullTimeEmployees', 0):,}" if data.get("fullTimeEmployees") else "N/A",
+                f"{data.get('city', '')}, {data.get('state', '')} {data.get('country', '')}".strip(", "),
+                data.get("website", "N/A")
+            ]
+        })
+    else:
+        st.error(f"Could not load data for symbol '{ticker_input}'. Please verify the ticker symbol.")
+else:
+    st.info("Enter a ticker symbol in the sidebar to begin.")
