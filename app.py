@@ -17,7 +17,7 @@ st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("📈 Interactive Stock Ticker Dashboard")
 
 # --- SIDEBAR INPUTS ---
-ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="RMD").upper()
+ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="AMD").upper()
 
 ticker = yf.Ticker(ticker_symbol)
 
@@ -91,17 +91,31 @@ def get_company_profile(sym):
 
 info = get_company_profile(ticker_symbol)
 
-# Dynamic Peer Generation based on Sector / Ticker
-def get_default_peers(sym, sector):
-    medtech_peers = "PHG, INSP, INGN, SYK, MDT"
-    tech_peers = "MU, META, AMZN, AVGO, MSFT, GOOGL, NVDA"
-    if sym == "RMD" or sector == "Healthcare":
-        return medtech_peers
-    return tech_peers
+# AUTOMATIC PEER DETERMINATION
+def get_dynamic_peers(sym, sector):
+    peer_map = {
+        "AMD": ["NVDA", "INTC", "QCOM", "AVGO", "TXN", "ARM"],
+        "NVDA": ["AMD", "INTC", "AVGO", "QCOM", "TSM"],
+        "RMD": ["PHG", "INSP", "INGN", "SYK", "MDT"],
+        "FTNT": ["PANW", "CRWD", "NET", "ZS", "CHKP"],
+        "AAPL": ["MSFT", "GOOGL", "AMZN", "SSNLF", "SONY"],
+        "MSFT": ["GOOGL", "AMZN", "AAPL", "ORCL", "IBM"],
+        "GOOGL": ["MSFT", "AMZN", "META", "AAPL"],
+        "AMZN": ["WMT", "MSFT", "GOOGL", "BABA"],
+        "META": ["GOOGL", "SNAP", "PINS", "MSFT"]
+    }
+    if sym in peer_map:
+        return peer_map[sym]
 
-default_peer_str = get_default_peers(ticker_symbol, info.get("sector", ""))
-peer_symbols = st.sidebar.text_input("Enter Peers (comma-separated):", value=default_peer_str)
-peers = [p.strip().upper() for p in peer_symbols.split(",") if p.strip()]
+    sector_defaults = {
+        "Technology": ["MSFT", "GOOGL", "NVDA", "AAPL", "AVGO"],
+        "Healthcare": ["MDT", "SYK", "PHG", "JNJ", "PFE"],
+        "Financial Services": ["JPM", "BAC", "WFC", "C", "GS"],
+        "Consumer Cyclical": ["AMZN", "TSLA", "HD", "NKE", "MCD"]
+    }
+    return sector_defaults.get(sector, ["MSFT", "GOOGL", "AMZN", "NVDA"])
+
+peers = get_dynamic_peers(ticker_symbol, info.get("sector", ""))
 
 if info:
     company_name = info.get("longName", ticker_symbol)
@@ -151,7 +165,7 @@ if info:
         """)
         
         st.markdown(f"""
-        **🛡️️ Economic MOAT Drivers:**
+        **🛡️ Economic MOAT Drivers:**
         - **High Switching Costs:** Deep integration into customer cloud ecosystems and IT infrastructure makes migration expensive and high-risk.
         - **Network & Scale Effects:** Proprietary technology stacks and large active user bases create high barriers to entry for new market players.
         """)
