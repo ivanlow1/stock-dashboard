@@ -104,19 +104,35 @@ if info:
     age_str = info.get("calculated_age", "N/A")
     website = info.get("website", "")
 
-    # Fetch logo URL from yfinance or fallback to Clearbit via domain name
-    logo_url = info.get("logo_url")
-    if not logo_url and website:
-        domain = urllib.parse.urlparse(website).netloc.replace("www.", "")
-        if domain:
-            logo_url = f"https://logo.clearbit.com/{domain}"
+    # Multi-tier logo retrieval strategy
+    logo_url = f"https://raw.githubusercontent.com/paritech/stock-logos/main/logos/{ticker_symbol}.png"
+    
+    # Check if Paritech logo exists, else fallback to Google Favicon service
+    try:
+        res = requests.head(logo_url, timeout=2)
+        if res.status_code != 200 and website:
+            domain = urllib.parse.urlparse(website).netloc.replace("www.", "")
+            if domain:
+                logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+    except Exception:
+        if website:
+            domain = urllib.parse.urlparse(website).netloc.replace("www.", "")
+            logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+        else:
+            logo_url = None
 
-    # Display Logo and Company Title
-    col_logo, col_title = st.columns([1, 6])
-    with col_logo:
-        if logo_url:
-            st.image(logo_url, width=80)
-    with col_title:
+    # Display Header with Logo
+    if logo_url:
+        st.markdown(
+            f"""
+            <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+                <img src="{logo_url}" style="width: 50px; height: 50px; object-fit: contain; border-radius: 8px; background-color: #ffffff; padding: 4px;">
+                <h2 style="margin: 0; padding: 0;">{company_name} ({ticker_symbol})</h2>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
         st.subheader(f"{company_name} ({ticker_symbol})")
 
     c1, c2, c3 = st.columns(3)
