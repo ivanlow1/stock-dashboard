@@ -135,7 +135,7 @@ if info:
     else:
         st.subheader(f"{company_name} ({ticker_symbol})")
         
-    # Fixed Custom Metric Cards to prevent text truncation / ellipsis (...)
+    # Custom Metric Cards with full wrapping to prevent text truncation (...)
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown(f"""
@@ -367,4 +367,113 @@ def get_raw_peer_metrics(symbols):
                     revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
                     gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
                     equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
-                    total_debt =
+                    total_debt = balance.loc['Total Debt'].dropna().iloc[0] if 'Total Debt' in balance.index else None
+                    
+                    if net_income and shares and net_income > 0 and last_price:
+                        eps = net_income / shares
+                        pe_val = round(last_price / eps, 2)
+                    if gross_profit and revenue:
+                        margin_val = round((gross_profit / revenue) * 100, 2)
+                    if net_income and equity:
+                        roe_val = round((net_income / equity) * 100, 2)
+                    if total_debt is not None and equity:
+                        de_val = round(total_debt / equity, 2)
+            except Exception:
+                pass
+                
+            metrics_list.append({
+                "Ticker": sym,
+                "Price": round(last_price, 2) if last_price else np.nan,
+                "Market Cap ($B)": round(mcap / 1e9, 2) if mcap else np.nan,
+                "52W High": round(year_high, 2) if year_high else np.nan,
+                "52W Low": round(year_low, 2) if year_low else np.nan,
+                "P/E": pe_val,
+                "Gross Margin (%)": margin_val,
+                "ROE (%)": roe_val,
+                "Debt/Equity": de_val
+            })
+        except Exception:
+            metrics_list.append({
+                "Ticker": sym, "Price": np.nan, "Market Cap ($B)": np.nan,
+                "52W High": np.nan, "52W Low": np.nan, "P/E": np.nan,
+                "Gross Margin (%)": np.nan, "ROE (%)": np.nan, "Debt/Equity": np.nan
+            })
+    return pd.DataFrame(metrics_list).set_index("Ticker")
+
+all_tickers = [ticker_symbol] + peers
+with st.spinner("Fetching live peer metrics..."):
+    df_raw = get_raw_peer_metrics(all_tickers)
+
+def style_relative_to_ref(df):
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    if len(df) < 1:
+        return styles
+    
+    green_style = 'background-color: #1e4620; color: #4cd964; font-weight: bold;'
+    red_style = 'background-color: #5c1d24; color: #ff6b6b; font-weight: bold;'
+    
+    higher_is_better = {
+        "Price": True, "Market Cap ($B)": True, "52W High": True, 
+        "52W Low": False, "P/E": False, "Gross Margin (%)": True, 
+        "ROE (%)": True, "Debt/Equity": False
+    }
+    
+    ref_row = df.iloc[0]
+    
+    # --- COLOR ROW 0 RELATIVE TO PEER AVERAGE ---
+    if len(df) > 1:
+        peer_avg = df.iloc[1:].mean(numeric_only=True)
+        for col in df.columns:
+            val = ref_row[col]
+            avg_val = peer_avg.get(col, np.nan)
+            if pd.isna(val) or pd.isna(avg_val):
+                continue
+            prefer_higher = higher_is_better.get(col, True)
+            if val > avg_val:
+                styles.iloc[0][df.columns.get_loc(col)] = green_style if prefer_higher else red_style
+            elif val < avg_val:
+                styles.iloc[0][df.columns.get_loc(col)] = red_style if prefer_higher else green_style
+
+    # --- COLOR ROWS 1+ RELATIVE TO ROW 0 ---
+    for idx in range(1, len(df)):
+        for col in df.columns:
+            val = df.iloc[idx][col]
+            ref_val = ref_row[col]
+            if pd.isna(val) or pd.isna(ref_val):
+                continue
+            prefer_higher = higher_is_better.get(col, True)
+            if val > ref_val:
+                styles.iloc[idx][df.columns.get_loc(col)] = green_style if prefer_higher else red_style
+            elif val < ref_val:
+                styles.iloc[idx][df.columns.get_loc(col)] = red_style if prefer_higher else green_style
+                
+    return styles
+
+styled_df = (
+    df_raw.style.apply(style_relative_to_ref, axis=None)
+    .format("{:.2f}", na_rep="N/A")
+)
+
+st.markdown("""
+<style>
+.custom-table {
+    width: 100%;
+    border-collapse: collapse;
+    color: #ffffff;
+    font-family: inherit;
+    background-color: #0e1117;
+    margin-bottom: 20px;
+}
+.custom-table th {
+    background-color: #1a1c23;
+    padding: 10px;
+    text-align: right;
+    border: 1px solid #30363d;
+}
+.custom-table th:first-child {
+    text-align: left;
+}
+.custom-table td {
+    padding: 10px;
+    text-align: right;
+    border: 1
