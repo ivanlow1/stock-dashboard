@@ -313,4 +313,208 @@ else:
     st.write("No recent news found across Google News, Yahoo Finance, or CNBC.")
 
 # --- PANEL 4: COMPETITOR & INDUSTRY PEER METRICS ---
-st.header
+st.header("4. Competitor & Industry Peer Metrics")
+
+with st.expander("📖 What do these competitor metrics mean?"):
+    st.markdown("""
+    - **Market Cap:** Total market value of the company's outstanding shares.
+    - **52W High / Low:** Highest and lowest prices at which the stock traded over the past year.
+    - **Trailing P/E:** Current price divided by trailing 12-month net income per share (Lower = often cheaper/better value).
+    - **Gross Margin (%):** Percentage of revenue retained after deducting cost of goods sold (Higher = better profitability).
+    - **ROE (%):** Return on Equity; Net Income divided by total Stockholder Equity (Higher = better returns).
+    - **Debt-to-Equity:** Ratio of total debt to shareholder equity (Lower = lower financial risk).
+    """)
+
+@st.cache_data(ttl=3600)
+def get_raw_peer_metrics(symbols):
+    metrics_list = []
+    for sym in symbols:
+        try:
+            t = yf.Ticker(sym)
+            fast = t.fast_info
+            last_price = fast.get("lastPrice")
+            mcap = fast.get("marketCap")
+            year_high = fast.get("yearHigh")
+            year_low = fast.get("yearLow")
+            shares = fast.get("shares")
+            
+            pe_val, margin_val, roe_val, de_val = np.nan, np.nan, np.nan, np.nan
+            try:
+                income = t.financials
+                balance = t.balance_sheet
+                if not income.empty and not balance.empty:
+                    net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
+                    revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
+                    gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
+                    equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
+                    total_debt = balance.loc['Total Debt'].dropna().iloc[0] if 'Total Debt' in balance.index else None
+                    
+                    if net_income and shares and net_income > 0 and last_price:
+                        eps = net_income / shares
+                        pe_val = round(last_price / eps, 2)
+                    if gross_profit and revenue:
+                        margin_val = round((gross_profit / revenue) * 100, 2)
+                    if net_income and equity:
+                        roe_val = round((net_income / equity) * 100, 2)
+                    if total_debt is not None and equity:
+                        de_val = round(total_debt / equity, 2)
+            except Exception:
+                pass
+                
+            metrics_list.append({
+                "Ticker": sym,
+                "Price": round(last_price, 2) if last_price else np.nan,
+                "Market Cap ($B)": round(mcap / 1e9, 2) if mcap else np.nan,
+                "52W High": round(year_high, 2) if year_high else np.nan,
+                "52W Low": round(year_low, 2) if year_low else np.nan,
+                "P/E": pe_val,
+                "Gross Margin (%)": margin_val,
+                "ROE (%)": roe_val,
+                "Debt/Equity": de_val
+            })
+        except Exception:
+            metrics_list.append({
+                "Ticker": sym, "Price": np.nan, "Market Cap ($B)": np.nan,
+                "52W High": np.nan, "52W Low": np.nan, "P/E": np.nan,
+                "Gross Margin (%)": np.nan, "ROE (%)": np.nan, "Debt/Equity": np.nan
+            })
+    return pd.DataFrame(metrics_list).set_index("Ticker")
+
+all_tickers = [ticker_symbol] + peers
+with st.spinner("Fetching live peer metrics..."):
+    df_raw = get_raw_peer_metrics(all_tickers)
+
+def style_relative_to_ref(df):
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    if len(df) < 1:
+        return styles
+    
+    green_style = 'background-color: #1e4620; color: #4cd964; font-weight: bold;'
+    red_style = 'background-color: #5c1d24; color: #ff6b6b; font-weight: bold;'
+    
+    higher_is_better = {
+        "Price": True, "Market Cap ($B)": True, "52W High": True, 
+        "52W Low": False, "P/E": False, "Gross Margin (%)": True, 
+        "ROE (%)": True, "Debt/Equity": False
+    }
+    
+    ref_row = df.iloc[0]
+    
+    # --- COLOR ROW 0 RELATIVE TO PEER AVERAGE ---
+    if len(df) > 1:
+        peer_avg = df.iloc[1:].mean(numeric_only=True)
+        for col in df.columns:
+            val = ref_row[col]
+            avg_val = peer_avg.get(col, np.nan)
+            if pd.isna(val) or pd.isna(avg_val):
+                continue
+            prefer_higher = higher_is_better.get(col, True)
+            if val > avg_val:
+                styles.iloc[0][df.columns.get_loc(col)] = green_style if prefer_higher else red_style
+            elif val < avg_val:
+                styles.iloc[0][df.columns.get_loc(col)] = red_style if prefer_higher else green_style
+
+    # --- COLOR ROWS 1+ RELATIVE TO ROW 0 ---
+    for idx in range(1, len(df)):
+        for col in df.columns:
+            val = df.iloc[idx][col]
+            ref_val = ref_row[col]
+            if pd.isna(val) or pd.isna(ref_val):
+                continue
+            prefer_higher = higher_is_better.get(col, True)
+            if val > ref_val:
+                styles.iloc[idx][df.columns.get_loc(col)] = green_style if prefer_higher else red_style
+            elif val < ref_val:
+                styles.iloc[idx][df.columns.get_loc(col)] = red_style if prefer_higher else green_style
+                
+    return styles
+
+styled_df = (
+    df_raw.style.apply(style_relative_to_ref, axis=None)
+    .format("{:.2f}", na_rep="N/A")
+)
+
+st.markdown("""
+<style>
+.custom-table {
+    width: 100%;
+    border-collapse: collapse;
+    color: #ffffff;
+    font-family: inherit;
+    background-color: #0e1117;
+    margin-bottom: 20px;
+}
+.custom-table th {
+    background-color: #1a1c23;
+    padding: 10px;
+    text-align: right;
+    border: 1px solid #30363d;
+}
+.custom-table th:first-child {
+    text-align: left;
+}
+.custom-table td {
+    padding: 10px;
+    text-align: right;
+    border: 1px solid #30363d;
+}
+.custom-table td:first-child {
+    text-align: left;
+    font-weight: bold;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.write(styled_df.to_html(classes='custom-table'), unsafe_allow_html=True)
+
+# --- PANEL 5: PROFESSIONAL STOCK ANALYST RECOMMENDATION & ANALYSIS ---
+st.header("5. Professional Stock Analyst Recommendation")
+
+with st.expander("📖 What do Overbought, Neutral, and Oversold mean?"):
+    st.markdown("""
+    - **🔴 Overbought:** The stock price has surged sharply or trades near the top of its historical band/valuation range, with elevated RSI indicators (>70). It may be due for a temporary pullback or consolidation.
+    - **🟡 Neutral:** The stock is trading within fair value valuation bounds and balanced technical bands (RSI between 30 and 70). Risk/reward is currently balanced.
+    - **🟢 Oversold:** The stock has experienced heavy selling pressure, driving technical momentum down (RSI < 30) or price below its lower trading band, often creating an attractive risk/reward entry point for long-term investors.
+    """)
+
+analyst_hist = ticker.history(period="1y")
+
+if not analyst_hist.empty and len(analyst_hist) > 30:
+    rsi_series = RSIIndicator(close=analyst_hist["Close"], window=14).rsi()
+    current_rsi = round(rsi_series.dropna().iloc[-1], 2)
+    current_price = analyst_hist["Close"].iloc[-1]
+    
+    bb_indicator = BollingerBands(close=analyst_hist["Close"], window=20, window_dev=2)
+    bb_upper = bb_indicator.bollinger_hband().dropna().iloc[-1]
+    bb_lower = bb_indicator.bollinger_lband().dropna().iloc[-1]
+    bb_sma = bb_indicator.bollinger_mavg().dropna().iloc[-1]
+    
+    pe_val, margin_val, roe_val = "N/A", "N/A", "N/A"
+    try:
+        income = ticker.financials
+        balance = ticker.balance_sheet
+        shares = ticker.fast_info.get("shares")
+        if not income.empty and not balance.empty:
+            net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
+            revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
+            gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
+            equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
+            
+            if net_income and shares and net_income > 0:
+                eps = net_income / shares
+                pe_val = round(current_price / eps, 2)
+            if gross_profit and revenue:
+                margin_val = f"{round((gross_profit / revenue) * 100, 2)}%"
+            if net_income and equity:
+                roe_val = f"{round((net_income / equity) * 100, 2)}%"
+    except Exception:
+        pass
+
+    if current_rsi > 70 or current_price >= bb_upper:
+        rating = "OVERBOUGHT"
+        rating_color = "🔴"
+        recommendation_text = f"**{ticker_symbol}** is displaying strong bullish momentum that has pushed technical indicators into extended territory. With a 14-day RSI of **{current_rsi}** and trading near or above its upper Bollinger Band (${round(bb_upper, 2)}), the stock shows potential risk for short-term profit taking or consolidation."
+    elif current_rsi < 30 or current_price <= bb_lower:
+        rating = "OVERSOLD"
+        rating_color = "🟢"
+        recommendation_text = f"**{ticker_symbol}** is currently experiencing significant downward momentum. With an RSI of **{current_rsi}** and trading near or below its lower Bollinger Band (${round(bb_lower,
