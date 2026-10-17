@@ -215,4 +215,56 @@ if not hist.empty and len(hist) >= 5:
     ))
     fig.add_trace(go.Scatter(
         x=hist.index, y=hist['BB_Upper'],
-        line=dict(color='rgba
+        line=dict(color='rgba(255, 0, 0, 0.3)', width=1),
+        name='Upper Band', fill='tonexty',
+        fillcolor='rgba(128, 128, 128, 0.1)', showlegend=True
+    ))
+    fig.add_trace(go.Scatter(
+        x=hist.index, y=hist['SMA_20'],
+        line=dict(color='blue', width=1.5),
+        name=f'{window_size}-Period SMA'
+    ))
+    fig.update_layout(
+        title=f"Historical Price with Bollinger Bands ({selected_label})",
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.error("Invalid ticker or missing historical data for the selected timeframe.")
+
+# --- PANEL 3: KEY NEWS & SENTIMENT ANALYSIS ---
+st.header("3. Key News & Sentiment")
+
+analyzer = SentimentIntensityAnalyzer()
+
+@st.cache_data(ttl=1800)
+def fetch_multi_source_news(sym):
+    articles = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    # 1. Google News RSS
+    try:
+        gn_url = f"https://news.google.com/rss/search?q={sym}+stock&hl=en-US&gl=US&ceid=US:en"
+        req = urllib.request.Request(gn_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as res:
+            root = ET.fromstring(res.read())
+            for item in root.findall('./channel/item')[:4]:
+                title = item.find('title').text if item.find('title') is not None else ""
+                link = item.find('link').text if item.find('link') is not None else "#"
+                if title:
+                    articles.append({'title': title, 'link': link, 'source': 'Google News'})
+    except Exception:
+        pass
+
+    # 2. Yahoo Finance RSS
+    try:
+        yf_url = f"https://finance.yahoo.com/rss/headline?s={sym}"
+        req = urllib.request.Request(yf_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as res:
+            root = ET.fromstring(res.read())
+            for item in root.findall('./channel/item')[:4]:
+                title = item.find('title').text if item.find('title') is not None else ""
+                link = item.find('link').text if item.find('link') is not None else "#"
+                if title:
+                    articles.append({'title': title, 'link': link, 'source': 'Yahoo Finance'})
