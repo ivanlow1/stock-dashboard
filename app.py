@@ -295,6 +295,8 @@ def fetch_multi_source_news(sym):
     try:
         cnbc_url = f"https://www.cnbc.com/id/100003114/device/rss/rss.html"
         req = urllib.request.Request(cnbc_url, headers=headers)
+        with urllib.request.urlopen(cnbc_url, headers=headers) as res:
+            pass
         with urllib.request.urlopen(req, timeout=5) as res:
             root = ET.fromstring(res.read())
             count = 0
@@ -476,4 +478,204 @@ st.markdown("""
 .custom-table td {
     padding: 10px;
     text-align: right;
-    border: 1
+    border: 1px solid #30363d;
+}
+.custom-table td:first-child {
+    text-align: left;
+    font-weight: bold;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.write(styled_df.to_html(classes='custom-table'), unsafe_allow_html=True)
+
+# --- PANEL 5: PROFESSIONAL STOCK ANALYST RECOMMENDATION & ANALYSIS ---
+st.header("5. Professional Stock Analyst Recommendation")
+
+with st.expander("📖 What do Overbought, Neutral, and Oversold mean?"):
+    st.markdown("""
+    - **🔴 Overbought:** The stock price has surged sharply or trades near the top of its historical band/valuation range, with elevated RSI indicators (>70). It may be due for a temporary pullback or consolidation.
+    - **🟡 Neutral:** The stock is trading within fair value valuation bounds and balanced technical bands (RSI between 30 and 70). Risk/reward is currently balanced.
+    - **🟢 Oversold:** The stock has experienced heavy selling pressure, driving technical momentum down (RSI < 30) or price below its lower trading band, often creating an attractive risk/reward entry point for long-term investors.
+    """)
+
+analyst_hist = ticker.history(period="1y")
+
+if not analyst_hist.empty and len(analyst_hist) > 30:
+    rsi_series = RSIIndicator(close=analyst_hist["Close"], window=14).rsi()
+    current_rsi = round(rsi_series.dropna().iloc[-1], 2)
+    current_price = analyst_hist["Close"].iloc[-1]
+    
+    bb_indicator = BollingerBands(close=analyst_hist["Close"], window=20, window_dev=2)
+    bb_upper = bb_indicator.bollinger_hband().dropna().iloc[-1]
+    bb_lower = bb_indicator.bollinger_lband().dropna().iloc[-1]
+    bb_sma = bb_indicator.bollinger_mavg().dropna().iloc[-1]
+    
+    pe_val, margin_val, roe_val = "N/A", "N/A", "N/A"
+    try:
+        income = ticker.financials
+        balance = ticker.balance_sheet
+        shares = ticker.fast_info.get("shares")
+        if not income.empty and not balance.empty:
+            net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
+            revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
+            gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
+            equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
+            
+            if net_income and shares and net_income > 0:
+                eps = net_income / shares
+                pe_val = round(current_price / eps, 2)
+            if gross_profit and revenue:
+                margin_val = f"{round((gross_profit / revenue) * 100, 2)}%"
+            if net_income and equity:
+                roe_val = f"{round((net_income / equity) * 100, 2)}%"
+    except Exception:
+        pass
+
+    if current_rsi > 70 or current_price >= bb_upper:
+        rating = "OVERBOUGHT"
+        rating_color = "🔴"
+        recommendation_text = f"**{ticker_symbol}** is displaying strong bullish momentum that has pushed technical indicators into extended territory. With a 14-day RSI of **{current_rsi}** and trading near or above its upper Bollinger Band (${round(bb_upper, 2)}), the stock shows potential risk for short-term profit taking or consolidation."
+    elif current_rsi < 30 or current_price <= bb_lower:
+        rating = "OVERSOLD"
+        rating_color = "🟢"
+        recommendation_text = f"**{ticker_symbol}** is currently experiencing significant downward momentum. With an RSI of **{current_rsi}** and trading near or below its lower Bollinger Band (${round(bb_lower, 2)}), selling pressure appears extended, presenting potential mean-reversion buying opportunities."
+    else:
+        rating = "NEUTRAL"
+        rating_color = "🟡"
+        recommendation_text = f"**{ticker_symbol}** is currently trading within normal technical bounds. Its RSI stands at **{current_rsi}**, well within balanced territory, and price action remains centered near its 20-day moving average (${round(bb_sma, 2)})."
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Analyst Rating", f"{rating_color} {rating}")
+    c2.metric("14-Day RSI", f"{current_rsi}")
+    c3.metric("Current Price", f"${round(current_price, 2)}")
+    c4.metric("20-Day SMA", f"${round(bb_sma, 2)}")
+
+    st.markdown("### Executive Summary & Technical Breakdown")
+    st.write(recommendation_text)
+    
+    st.info(f"""
+    **Financial & Technical Breakdown Summary for {ticker_symbol}:**
+    - **Valuation & Efficiency:** P/E Ratio: **{pe_val}** | Gross Margin: **{margin_val}** | ROE: **{roe_val}**
+    - **Bollinger Bands:** Upper Bound: **${round(bb_upper, 2)}** | Lower Bound: **${round(bb_lower, 2)}**
+    - **Analyst Note:** Always evaluate overall macroeconomic conditions and sector trends in tandem with technical RSI levels.
+    """)
+else:
+    st.warning("Insufficient historical price data available to generate technical analyst analysis.")
+
+# --- PANEL 6: COMPANY PERFORMANCE & NEXT REPORTING ---
+st.header(f"6. Company Performance ({ticker_symbol})")
+
+# Helper to fetch next earnings/reporting date via yfinance
+@st.cache_data(ttl=3600)
+def get_next_earnings_date(sym):
+    try:
+        t = yf.Ticker(sym)
+        cal = t.calendar
+        if cal is not None:
+            if isinstance(cal, dict) and 'Earnings Date' in cal:
+                dates = cal['Earnings Date']
+                if isinstance(dates, list) and len(dates) > 0:
+                    return pd.to_datetime(dates[0]).strftime('%Y-%m-%d')
+                elif isinstance(dates, (datetime, pd.Timestamp)):
+                    return dates.strftime('%Y-%m-%d')
+            elif isinstance(cal, pd.DataFrame) and not cal.empty:
+                if 'Earnings Date' in cal.index:
+                    val = cal.loc['Earnings Date'].iloc[0]
+                    return pd.to_datetime(val).strftime('%Y-%m-%d')
+        
+        ed = t.get_earnings_dates(limit=3)
+        if ed is not None and not ed.empty:
+            future_dates = ed[ed.index > datetime.now()]
+            if not future_dates.empty:
+                return future_dates.index[0].strftime('%Y-%m-%d')
+            else:
+                return ed.index[0].strftime('%Y-%m-%d')
+    except Exception:
+        pass
+    return "Not Available"
+
+next_earnings = get_next_earnings_date(ticker_symbol)
+
+# Display Next Earnings Reporting Date Banner
+st.markdown(f"""
+<div style="background-color: #1a1c23; border: 1px solid #30363d; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+    <div>
+        <h4 style="margin: 0; color: #ffffff;">📅 Next Financial Reporting / Earnings Date</h4>
+        <p style="margin: 5px 0 0 0; color: #8b949e; font-size: 14px;">Estimated or scheduled reporting timeline for {ticker_symbol}</p>
+    </div>
+    <div style="font-size: 20px; font-weight: bold; color: #4cd964;">
+        {next_earnings}
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+@st.cache_data(ttl=3600)
+def get_quarterly_financials(sym):
+    t = yf.Ticker(sym)
+    q_financials = t.quarterly_financials
+    if q_financials.empty:
+        return pd.DataFrame()
+    return q_financials
+
+q_fin = get_quarterly_financials(ticker_symbol)
+
+if not q_fin.empty and q_fin.shape[1] >= 1:
+    cols = list(q_fin.columns)
+    metric_keys = {
+        "Total Revenue": "Revenue ($M)",
+        "Gross Profit": "Gross Profit ($M)",
+        "Operating Income": "Operating Income ($M)",
+        "Net Income": "Net Income ($M)",
+        "EBITDA": "EBITDA ($M)"
+    }
+    rows = []
+    
+    q0_date = cols[0].strftime("%Y-%m-%d") if hasattr(cols[0], "strftime") else str(cols[0])
+    q1_date = cols[1].strftime("%Y-%m-%d") if len(cols) > 1 and hasattr(cols[1], "strftime") else (str(cols[1]) if len(cols) > 1 else "N/A")
+    q4_date = cols[4].strftime("%Y-%m-%d") if len(cols) > 4 and hasattr(cols[4], "strftime") else (str(cols[4]) if len(cols) > 4 else "N/A")
+    
+    for key, display_name in metric_keys.items():
+        if key in q_fin.index:
+            v0 = q_fin.loc[key].iloc[0] / 1e6 if pd.notna(q_fin.loc[key].iloc[0]) else np.nan
+            v1 = q_fin.loc[key].iloc[1] / 1e6 if len(cols) > 1 and pd.notna(q_fin.loc[key].iloc[1]) else np.nan
+            v4 = q_fin.loc[key].iloc[4] / 1e6 if len(cols) > 4 and pd.notna(q_fin.loc[key].iloc[4]) else np.nan
+            
+            qoq_pct = ((v0 - v1) / abs(v1)) * 100 if pd.notna(v0) and pd.notna(v1) and v1 != 0 else np.nan
+            yoy_pct = ((v0 - v4) / abs(v4)) * 100 if pd.notna(v0) and pd.notna(v4) and v4 != 0 else np.nan
+            
+            rows.append({
+                "Financial Metric": display_name,
+                f"Latest ({q0_date})": round(v0, 2) if pd.notna(v0) else np.nan,
+                f"Prior Qtr ({q1_date})": round(v1, 2) if pd.notna(v1) else np.nan,
+                "QoQ Growth (%)": round(qoq_pct, 2) if pd.notna(qoq_pct) else np.nan,
+                f"Prior Year Qtr ({q4_date})": round(v4, 2) if pd.notna(v4) else np.nan,
+                "YoY Growth (%)": round(yoy_pct, 2) if pd.notna(yoy_pct) else np.nan
+            })
+            
+    df_perf = pd.DataFrame(rows).set_index("Financial Metric")
+    
+    def style_performance(df):
+        styles = pd.DataFrame('', index=df.index, columns=df.columns)
+        green_style = 'background-color: #1e4620; color: #4cd964; font-weight: bold;'
+        red_style = 'background-color: #5c1d24; color: #ff6b6b; font-weight: bold;'
+        for idx in range(len(df)):
+            for col in df.columns:
+                if "Growth (%)" in col:
+                    val = df.iloc[idx][col]
+                    if pd.notna(val):
+                        if val > 0:
+                            styles.iloc[idx][df.columns.get_loc(col)] = green_style
+                        elif val < 0:
+                            styles.iloc[idx][df.columns.get_loc(col)] = red_style
+        return styles
+
+    styled_perf = (
+        df_perf.style.apply(style_performance, axis=None)
+        .format("{:+.2f}%", subset=[c for c in df_perf.columns if "Growth" in c], na_rep="N/A")
+        .format("{:,.2f}", subset=[c for c in df_perf.columns if "Growth" not in c], na_rep="N/A")
+    )
+    
+    st.write(styled_perf.to_html(classes='custom-table'), unsafe_allow_html=True)
+else:
+    st.warning("Quarterly financial report data is currently unavailable for this ticker.")
