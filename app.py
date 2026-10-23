@@ -334,8 +334,8 @@ def get_raw_peer_metrics(symbols):
     metrics_list = []
     for sym in symbols:
         try:
-            t = yf.Ticker(sym)
-            fast = t.fast_info
+            t_obj = yf.Ticker(sym)
+            fast = t_obj.fast_info
             last_price = fast.get("lastPrice")
             mcap = fast.get("marketCap")
             year_high = fast.get("yearHigh")
@@ -344,8 +344,8 @@ def get_raw_peer_metrics(symbols):
             
             pe_val, margin_val, roe_val, de_val = np.nan, np.nan, np.nan, np.nan
             try:
-                income = t.financials
-                balance = t.balance_sheet
+                income = t_obj.financials
+                balance = t_obj.balance_sheet
                 if not income.empty and not balance.empty:
                     net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
                     revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
@@ -516,11 +516,11 @@ if not analyst_hist.empty and len(analyst_hist) > 30:
     st.markdown("### Executive Summary & Technical Breakdown")
     st.write(recommendation_text)
     
-    # Forward Multiples Target Price Calculation
+    # Forward Multiples Target Price Calculation (12-Month Horizon)
     st.markdown("### 🎯 12-Month Projected Target Price (Forward Multiples Framework)")
     try:
-        financials = t.financials
-        balance = t.balance_sheet
+        financials = ticker.financials
+        balance = ticker.balance_sheet
         shares = info.get("sharesOutstanding") or ticker.fast_info.get("shares")
         
         ttm_revenue = 1e10
@@ -566,8 +566,8 @@ st.header(f"6. Company Performance ({ticker_symbol})")
 
 @st.cache_data(ttl=3600)
 def get_quarterly_financials(sym):
-    t = yf.Ticker(sym)
-    q_financials = t.quarterly_financials
+    t_obj = yf.Ticker(sym)
+    q_financials = t_obj.quarterly_financials
     if q_financials.empty:
         return pd.DataFrame()
     return q_financials
