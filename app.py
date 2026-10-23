@@ -16,7 +16,7 @@ st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("📈 Interactive Stock Ticker Dashboard")
 
 # --- SIDEBAR INPUTS ---
-ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="AMD").upper()
+ticker_symbol = st.sidebar.text_input("Enter Ticker Symbol:", value="CRWV").upper()
 ticker = yf.Ticker(ticker_symbol)
 
 # --- HELPER: WIKIDATA / WIKIPEDIA FOUNDING YEAR RETRIEVAL ---
@@ -31,7 +31,6 @@ def get_founding_year_wikidata(company_name):
         entity_url = f"https://www.wikidata.org/wiki/Special:EntityData/{entity_id}.json"
         data = requests.get(entity_url, headers=headers, timeout=5).json()
         claims = data['entities'][entity_id]['claims']
-        # P571 = Inception / Founded date in Wikidata
         if 'P571' in claims:
             time_str = claims['P571'][0]['mainsnak']['datavalue']['value']['time']
             founding_year = int(time_str.split('-')[0].replace('+', ''))
@@ -51,7 +50,6 @@ def get_company_profile(sym):
         current_year = datetime.now().year
         company_name = info.get("longName", sym)
         
-        # 1. Try yfinance metadata
         founded_year = info.get("startDate") or info.get("firstTradeDateEpochUtc")
         calculated_age = None
         if founded_year:
@@ -61,13 +59,11 @@ def get_company_profile(sym):
                 est_year = datetime.fromtimestamp(founded_year).year
                 calculated_age = f"Public for {current_year - est_year} years (IPO ~{est_year})"
         
-        # 2. Try Wikidata / Wikipedia lookup
         if not calculated_age:
             wiki_year = get_founding_year_wikidata(company_name)
             if wiki_year:
                 calculated_age = f"{current_year - wiki_year} years (Founded ~{wiki_year} via Wikipedia)"
                 
-        # 3. Fallback to earliest stock trade history date
         if not calculated_age:
             hist = t.history(period="max")
             if not hist.empty:
@@ -83,9 +79,9 @@ def get_company_profile(sym):
 
 info = get_company_profile(ticker_symbol)
 
-# AUTOMATIC PEER DETERMINATION
 def get_dynamic_peers(sym, sector):
     peer_map = {
+        "CRWV": ["NVDA", "MSFT", "GOOGL", "AMZN"],
         "AMD": ["NVDA", "INTC", "QCOM", "AVGO", "TXN", "ARM"],
         "NVDA": ["AMD", "INTC", "AVGO", "QCOM", "TSM"],
         "RMD": ["PHG", "INSP", "INGN", "SYK", "MDT"],
@@ -117,14 +113,12 @@ if info:
     age_str = info.get("calculated_age", "N/A")
     website = info.get("website", "")
     
-    # Reliable Favicon / Logo Retrieval Strategy
     logo_url = None
     if website:
         domain = urllib.parse.urlparse(website).netloc.replace("www.", "")
         if domain:
             logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
             
-    # Display Header with Logo
     if logo_url:
         st.markdown(
             f"""
@@ -138,7 +132,6 @@ if info:
     else:
         st.subheader(f"{company_name} ({ticker_symbol})")
         
-    # Custom Metric Cards with full wrapping to prevent text truncation (...)
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown(f"""
@@ -208,7 +201,7 @@ timeframe_options = {
 selected_label = st.radio(
     "Select Timeframe:",
     options=list(timeframe_options.keys()),
-    index=3, # Default to '1 Year'
+    index=3,
     horizontal=True
 )
 period_param = timeframe_options[selected_label]
@@ -266,7 +259,6 @@ def fetch_multi_source_news(sym):
     articles = []
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
-    # 1. Google News RSS
     try:
         gn_url = f"https://news.google.com/rss/search?q={sym}+stock&hl=en-US&gl=US&ceid=US:en"
         req = urllib.request.Request(gn_url, headers=headers)
@@ -280,7 +272,6 @@ def fetch_multi_source_news(sym):
     except Exception:
         pass
 
-    # 2. Yahoo Finance RSS
     try:
         yf_url = f"https://finance.yahoo.com/rss/headline?s={sym}"
         req = urllib.request.Request(yf_url, headers=headers)
@@ -291,26 +282,6 @@ def fetch_multi_source_news(sym):
                 link = item.find('link').text if item.find('link') is not None else "#"
                 if title:
                     articles.append({'title': title, 'link': link, 'source': 'Yahoo Finance'})
-    except Exception:
-        pass
-
-    # 3. CNBC Search RSS
-    try:
-        cnbc_url = f"https://www.cnbc.com/id/100003114/device/rss/rss.html"
-        req = urllib.request.Request(cnbc_url, headers=headers)
-        with urllib.request.urlopen(cnbc_url, headers=headers) as res:
-            pass
-        with urllib.request.urlopen(req, timeout=5) as res:
-            root = ET.fromstring(res.read())
-            count = 0
-            for item in root.findall('./channel/item'):
-                title = item.find('title').text if item.find('title') is not None else ""
-                link = item.find('link').text if item.find('link') is not None else "#"
-                if title and sym.lower() in title.lower():
-                    articles.append({'title': title, 'link': link, 'source': 'CNBC'})
-                    count += 1
-                if count >= 3:
-                    break
     except Exception:
         pass
 
@@ -335,7 +306,7 @@ if news_items:
     news_df = pd.DataFrame(news_data)
     st.write(news_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.write("No recent news found across Google News, Yahoo Finance, or CNBC.")
+    st.write("No recent news found across Google News or Yahoo Finance.")
 
 # --- PANEL 4: COMPETITOR & INDUSTRY PEER METRICS ---
 st.header("4. Competitor & Industry Peer Metrics")
@@ -344,10 +315,10 @@ with st.expander("📖 What do these competitor metrics mean?"):
     st.markdown("""
     - **Market Cap:** Total market value of the company's outstanding shares.
     - **52W High / Low:** Highest and lowest prices at which the stock traded over the past year.
-    - **Trailing P/E:** Current price divided by trailing 12-month net income per share (Lower = often cheaper/better value).
-    - **Gross Margin (%):** Percentage of revenue retained after deducting cost of goods sold (Higher = better profitability).
-    - **ROE (%):** Return on Equity; Net Income divided by total Stockholder Equity (Higher = better returns).
-    - **Debt-to-Equity:** Ratio of total debt to shareholder equity (Lower = lower financial risk).
+    - **Trailing P/E:** Current price divided by trailing 12-month net income per share.
+    - **Gross Margin (%):** Percentage of revenue retained after deducting cost of goods sold.
+    - **ROE (%):** Return on Equity; Net Income divided by total Stockholder Equity.
+    - **Debt-to-Equity:** Ratio of total debt to shareholder equity.
     """)
 
 @st.cache_data(ttl=3600)
@@ -416,16 +387,13 @@ def style_relative_to_ref(df):
     
     green_style = 'background-color: #1e4620; color: #4cd964; font-weight: bold;'
     red_style = 'background-color: #5c1d24; color: #ff6b6b; font-weight: bold;'
-    
     higher_is_better = {
         "Price": True, "Market Cap ($B)": True, "52W High": True, 
         "52W Low": False, "P/E": False, "Gross Margin (%)": True, 
         "ROE (%)": True, "Debt/Equity": False
     }
-    
     ref_row = df.iloc[0]
     
-    # --- COLOR ROW 0 RELATIVE TO PEER AVERAGE ---
     if len(df) > 1:
         peer_avg = df.iloc[1:].mean(numeric_only=True)
         for col in df.columns:
@@ -439,7 +407,6 @@ def style_relative_to_ref(df):
             elif val < avg_val:
                 styles.iloc[0][df.columns.get_loc(col)] = red_style if prefer_higher else green_style
 
-    # --- COLOR ROWS 1+ RELATIVE TO ROW 0 ---
     for idx in range(1, len(df)):
         for col in df.columns:
             val = df.iloc[idx][col]
@@ -451,7 +418,6 @@ def style_relative_to_ref(df):
                 styles.iloc[idx][df.columns.get_loc(col)] = green_style if prefer_higher else red_style
             elif val < ref_val:
                 styles.iloc[idx][df.columns.get_loc(col)] = red_style if prefer_higher else green_style
-                
     return styles
 
 styled_df = (
@@ -497,9 +463,9 @@ st.header("5. Professional Stock Analyst Recommendation")
 
 with st.expander("📖 What do Overbought, Neutral, and Oversold mean?"):
     st.markdown("""
-    - **🔴 Overbought:** The stock price has surged sharply or trades near the top of its historical band/valuation range, with elevated RSI indicators (>70). It may be due for a temporary pullback or consolidation.
-    - **🟡 Neutral:** The stock is trading within fair value valuation bounds and balanced technical bands (RSI between 30 and 70). Risk/reward is currently balanced.
-    - **🟢 Oversold:** The stock has experienced heavy selling pressure, driving technical momentum down (RSI < 30) or price below its lower trading band, often creating an attractive risk/reward entry point for long-term investors.
+    - **🔴 Overbought:** Stock price is near the top of its historical band with RSI > 70.
+    - **🟡 Neutral:** Stock is trading within fair value valuation bounds (RSI between 30 and 70).
+    - **🟢 Oversold:** Stock has experienced heavy selling pressure (RSI < 30), creating potential entry points.
     """)
 
 analyst_hist = ticker.history(period="1y")
@@ -514,278 +480,4 @@ if not analyst_hist.empty and len(analyst_hist) > 30:
     bb_lower = bb_indicator.bollinger_lband().dropna().iloc[-1]
     bb_sma = bb_indicator.bollinger_mavg().dropna().iloc[-1]
     
-    pe_val, margin_val, roe_val = "N/A", "N/A", "N/A"
-    try:
-        income = ticker.financials
-        balance = ticker.balance_sheet
-        shares = ticker.fast_info.get("shares")
-        if not income.empty and not balance.empty:
-            net_income = income.loc['Net Income'].dropna().iloc[0] if 'Net Income' in income.index else None
-            revenue = income.loc['Total Revenue'].dropna().iloc[0] if 'Total Revenue' in income.index else None
-            gross_profit = income.loc['Gross Profit'].dropna().iloc[0] if 'Gross Profit' in income.index else None
-            equity = balance.loc['Stockholders Equity'].dropna().iloc[0] if 'Stockholders Equity' in balance.index else None
-            
-            if net_income and shares and net_income > 0:
-                eps = net_income / shares
-                pe_val = round(current_price / eps, 2)
-            if gross_profit and revenue:
-                margin_val = f"{round((gross_profit / revenue) * 100, 2)}%"
-            if net_income and equity:
-                roe_val = f"{round((net_income / equity) * 100, 2)}%"
-    except Exception:
-        pass
-
-    if current_rsi > 70 or current_price >= bb_upper:
-        rating = "OVERBOUGHT"
-        rating_color = "🔴"
-        recommendation_text = f"**{ticker_symbol}** is displaying strong bullish momentum that has pushed technical indicators into extended territory. With a 14-day RSI of **{current_rsi}** and trading near or above its upper Bollinger Band (${round(bb_upper, 2)}), the stock shows potential risk for short-term profit taking or consolidation."
-    elif current_rsi < 30 or current_price <= bb_lower:
-        rating = "OVERSOLD"
-        rating_color = "🟢"
-        recommendation_text = f"**{ticker_symbol}** is currently experiencing significant downward momentum. With an RSI of **{current_rsi}** and trading near or below its lower Bollinger Band (${round(bb_lower, 2)}), selling pressure appears extended, presenting potential mean-reversion buying opportunities."
-    else:
-        rating = "NEUTRAL"
-        rating_color = "🟡"
-        recommendation_text = f"**{ticker_symbol}** is currently trading within normal technical bounds. Its RSI stands at **{current_rsi}**, well within balanced territory, and price action remains centered near its 20-day moving average (${round(bb_sma, 2)})."
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Analyst Rating", f"{rating_color} {rating}")
-    c2.metric("14-Day RSI", f"{current_rsi}")
-    c3.metric("Current Price", f"${round(current_price, 2)}")
-    c4.metric("20-Day SMA", f"${round(bb_sma, 2)}")
-
-    st.markdown("### Executive Summary & Technical Breakdown")
-    st.write(recommendation_text)
-    
-    st.info(f"""
-    **Financial & Technical Breakdown Summary for {ticker_symbol}:**
-    - **Valuation & Efficiency:** P/E Ratio: **{pe_val}** | Gross Margin: **{margin_val}** | ROE: **{roe_val}**
-    - **Bollinger Bands:** Upper Bound: **${round(bb_upper, 2)}** | Lower Bound: **${round(bb_lower, 2)}**
-    - **Analyst Note:** Always evaluate overall macroeconomic conditions and sector trends in tandem with technical RSI levels.
-    """)
-else:
-    st.warning("Insufficient historical price data available to generate technical analyst analysis.")
-
-# --- PANEL 6: COMPANY PERFORMANCE & NEXT REPORTING ---
-st.header(f"6. Company Performance ({ticker_symbol})")
-
-# Helper to fetch next earnings/reporting date via yfinance
-@st.cache_data(ttl=3600)
-def get_next_earnings_date(sym):
-    try:
-        t = yf.Ticker(sym)
-        cal = t.calendar
-        if cal is not None:
-            if isinstance(cal, dict) and 'Earnings Date' in cal:
-                dates = cal['Earnings Date']
-                if isinstance(dates, list) and len(dates) > 0:
-                    return pd.to_datetime(dates[0]).strftime('%Y-%m-%d')
-                elif isinstance(dates, (datetime, pd.Timestamp)):
-                    return dates.strftime('%Y-%m-%d')
-            elif isinstance(cal, pd.DataFrame) and not cal.empty:
-                if 'Earnings Date' in cal.index:
-                    val = cal.loc['Earnings Date'].iloc[0]
-                    return pd.to_datetime(val).strftime('%Y-%m-%d')
-        
-        ed = t.get_earnings_dates(limit=3)
-        if ed is not None and not ed.empty:
-            future_dates = ed[ed.index > datetime.now()]
-            if not future_dates.empty:
-                return future_dates.index[0].strftime('%Y-%m-%d')
-            else:
-                return ed.index[0].strftime('%Y-%m-%d')
-    except Exception:
-        pass
-    return "Not Available"
-
-next_earnings = get_next_earnings_date(ticker_symbol)
-
-# Display Next Earnings Reporting Date Banner
-st.markdown(f"""
-<div style="background-color: #1a1c23; border: 1px solid #30363d; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
-    <div>
-        <h4 style="margin: 0; color: #ffffff;">📅 Next Financial Reporting / Earnings Date</h4>
-        <p style="margin: 5px 0 0 0; color: #8b949e; font-size: 14px;">Estimated or scheduled reporting timeline for {ticker_symbol}</p>
-    </div>
-    <div style="font-size: 20px; font-weight: bold; color: #4cd964;">
-        {next_earnings}
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-@st.cache_data(ttl=3600)
-def get_quarterly_financials(sym):
-    t = yf.Ticker(sym)
-    q_financials = t.quarterly_financials
-    if q_financials.empty:
-        return pd.DataFrame()
-    return q_financials
-
-q_fin = get_quarterly_financials(ticker_symbol)
-
-if not q_fin.empty and q_fin.shape[1] >= 1:
-    cols = list(q_fin.columns)
-    metric_keys = {
-        "Total Revenue": "Revenue ($M)",
-        "Gross Profit": "Gross Profit ($M)",
-        "Operating Income": "Operating Income ($M)",
-        "Net Income": "Net Income ($M)",
-        "EBITDA": "EBITDA ($M)"
-    }
-    rows = []
-    
-    q0_date = cols[0].strftime("%Y-%m-%d") if hasattr(cols[0], "strftime") else str(cols[0])
-    q1_date = cols[1].strftime("%Y-%m-%d") if len(cols) > 1 and hasattr(cols[1], "strftime") else (str(cols[1]) if len(cols) > 1 else "N/A")
-    q4_date = cols[4].strftime("%Y-%m-%d") if len(cols) > 4 and hasattr(cols[4], "strftime") else (str(cols[4]) if len(cols) > 4 else "N/A")
-    
-    for key, display_name in metric_keys.items():
-        if key in q_fin.index:
-            v0 = q_fin.loc[key].iloc[0] / 1e6 if pd.notna(q_fin.loc[key].iloc[0]) else np.nan
-            v1 = q_fin.loc[key].iloc[1] / 1e6 if len(cols) > 1 and pd.notna(q_fin.loc[key].iloc[1]) else np.nan
-            v4 = q_fin.loc[key].iloc[4] / 1e6 if len(cols) > 4 and pd.notna(q_fin.loc[key].iloc[4]) else np.nan
-            
-            qoq_pct = ((v0 - v1) / abs(v1)) * 100 if pd.notna(v0) and pd.notna(v1) and v1 != 0 else np.nan
-            yoy_pct = ((v0 - v4) / abs(v4)) * 100 if pd.notna(v0) and pd.notna(v4) and v4 != 0 else np.nan
-            
-            rows.append({
-                "Financial Metric": display_name,
-                f"Latest ({q0_date})": round(v0, 2) if pd.notna(v0) else np.nan,
-                f"Prior Qtr ({q1_date})": round(v1, 2) if pd.notna(v1) else np.nan,
-                "QoQ Growth (%)": round(qoq_pct, 2) if pd.notna(qoq_pct) else np.nan,
-                f"Prior Year Qtr ({q4_date})": round(v4, 2) if pd.notna(v4) else np.nan,
-                "YoY Growth (%)": round(yoy_pct, 2) if pd.notna(yoy_pct) else np.nan
-            })
-            
-    df_perf = pd.DataFrame(rows).set_index("Financial Metric")
-    
-    def style_performance(df):
-        styles = pd.DataFrame('', index=df.index, columns=df.columns)
-        green_style = 'background-color: #1e4620; color: #4cd964; font-weight: bold;'
-        red_style = 'background-color: #5c1d24; color: #ff6b6b; font-weight: bold;'
-        for idx in range(len(df)):
-            for col in df.columns:
-                if "Growth (%)" in col:
-                    val = df.iloc[idx][col]
-                    if pd.notna(val):
-                        if val > 0:
-                            styles.iloc[idx][df.columns.get_loc(col)] = green_style
-                        elif val < 0:
-                            styles.iloc[idx][df.columns.get_loc(col)] = red_style
-        return styles
-
-    styled_perf = (
-        df_perf.style.apply(style_performance, axis=None)
-        .format("{:+.2f}%", subset=[c for c in df_perf.columns if "Growth" in c], na_rep="N/A")
-        .format("{:,.2f}", subset=[c for c in df_perf.columns if "Growth" not in c], na_rep="N/A")
-    )
-    
-    st.write(styled_perf.to_html(classes='custom-table'), unsafe_allow_html=True)
-else:
-    st.warning("Quarterly financial report data is currently unavailable for this ticker.")
-
-st.divider()
-
-# --- PANEL 7: INTRINSIC VALUE & WEEKLY TRACKING ---
-st.header(f"7. Intrinsic Value & Weekly Tracking ({ticker_symbol})")
-
-with st.expander("📖 How is this Intrinsic Value Calculated?"):
-    st.markdown("""
-    - **Discounted Cash Flow (DCF):** Projects future Free Cash Flows (FCF) over a 10-year horizon (split into high-growth and normalization phases) and discounts them back using a 10.0% Weighted Average Cost of Capital (WACC).
-    - **Terminal Value:** Estimated using the Gordon Growth Model assuming a perpetual growth rate ($g$) of 3.0%.
-    - **Weekly Tracking:** Re-evaluates trailing cash flows and share counts on a multi-stage DCF basis historically across weekly intervals.
-    """)
-
-@st.cache_data(ttl=3600)
-def calculate_intrinsic_value_history(sym):
-    try:
-        t = yf.Ticker(sym)
-        hist_prices = t.history(period="1y")
-        if hist_prices.empty:
-            return pd.DataFrame()
-        
-        weekly_df = hist_prices[['Close']].resample('W').last().dropna()
-        
-        income = t.financials
-        shares = t.fast_info.get("shares")
-        
-        base_fcf_per_share = 5.0 
-        if not income.empty and shares and shares > 0:
-            net_income_rows = [row for row in ['Net Income', 'Net Income From Continuing Operation'] if row in income.index]
-            if net_income_rows:
-                latest_ni = income.loc[net_income_rows[0]].dropna().iloc[0]
-                base_fcf_per_share = max(latest_ni / shares, 1.5)
-        
-        # Multi-stage DCF calculation parameters
-        wacc = 0.10
-        g1 = 0.22 # Years 1-5 growth
-        g2 = 0.08 # Years 6-10 growth
-        terminal_g = 0.03
-        
-        # Compute baseline intrinsic value using multi-stage DCF formula
-        pv_fcf = 0
-        current_fcf = base_fcf_per_share
-        
-        # Years 1 to 5
-        for yr in range(1, 6):
-            current_fcf *= (1 + g1)
-            pv_fcf += current_fcf / ((1 + wacc) ** yr)
-            
-        # Years 6 to 10
-        for yr in range(6, 11):
-            current_fcf *= (1 + g2)
-            pv_fcf += current_fcf / ((1 + wacc) ** yr)
-            
-        # Terminal Value
-        terminal_value = (current_fcf * (1 + terminal_g)) / (wacc - terminal_g)
-        pv_terminal = terminal_value / ((1 + wacc) ** 10)
-        
-        calculated_iv = round(pv_fcf + pv_terminal, 2)
-        
-        # Scale weekly historical intrinsic values relative to the stock price trajectory and calculated IV anchor
-        intrinsic_values = []
-        for price in weekly_df['Close']:
-            # Anchor intrinsic value dynamically to reflect growth pricing relative to market price movement
-            ratio = calculated_iv / weekly_df['Close'].iloc[-1] if weekly_df['Close'].iloc[-1] > 0 else 0.8
-            hist_iv = price * min(max(ratio, 0.4), 0.95)
-            intrinsic_values.append(round(hist_iv, 2))
-            
-        weekly_df['Intrinsic_Value'] = intrinsic_values
-        weekly_df.rename(columns={'Close': 'Market_Price'}, inplace=True)
-        return weekly_df
-    except Exception:
-        return pd.DataFrame()
-
-with st.spinner("Computing intrinsic value and historical weekly trends..."):
-    df_iv = calculate_intrinsic_value_history(ticker_symbol)
-
-if not df_iv.empty:
-    current_iv = df_iv['Intrinsic_Value'].iloc[-1]
-    current_mkt = df_iv['Market_Price'].iloc[-1]
-    diff_pct = ((current_mkt - current_iv) / current_iv) * 100
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Current Intrinsic Value (DCF)", f"${current_iv:,.2f}")
-    col2.metric("Current Market Price", f"${current_mkt:,.2f}")
-    col3.metric("Valuation Spread", f"{diff_pct:+.2f}%", delta_color="inverse")
-    
-    fig_iv = go.Figure()
-    fig_iv.add_trace(go.Scatter(
-        x=df_iv.index, y=df_iv['Intrinsic_Value'],
-        line=dict(color='#00ffcc', width=2.5),
-        name='Estimated Intrinsic Value'
-    ))
-    fig_iv.add_trace(go.Scatter(
-        x=df_iv.index, y=df_iv['Market_Price'],
-        line=dict(color='#ff9900', width=1.5, dash='dot'),
-        name='Market Price'
-    ))
-    fig_iv.update_layout(
-        title=f"Weekly Intrinsic Value vs. Market Price ({ticker_symbol})",
-        xaxis_title="Date",
-        yaxis_title="USD ($)",
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    st.plotly_chart(fig_iv, use_container_width=True)
-else:
-    st.warning("Unable to compute historical intrinsic value tracking for this ticker.")
+    if current_rsi > 70 or current_price >= bb_
