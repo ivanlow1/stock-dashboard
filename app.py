@@ -311,4 +311,7 @@ if news_items:
             "Sentiment": sentiment,
             "Score": round(score, 2)
         })
-    news_df = pd.DataFrame(news_
+    news_df = pd.DataFrame(news_data)
+    st.write(news_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+else:
+    st.
